@@ -1,0 +1,21 @@
+language: python
+
+cache:
+  - pip
+
+python:
+  - 3.6
+
+env:
+  global:
+    - COB_FORCE_CURRENT_INTERPRETER=1
+
+sudo: false
+
+install:
+  - pip install cob
+  - cob bootstrap
+  - ./.cob/env/bin/pip install pylint
+
+script:
+  - ./.cob/env/bin/pylint *.py

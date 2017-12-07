@@ -1,0 +1,52 @@
+services:
+  db:
+    environment:
+      POSTGRES_DB: dhcpawn
+      POSTGRES_USER: dhcpawn
+    image: postgres:9.6
+    ports:
+      - 15432:5432
+    volumes:
+    - db:/var/lib/postgresql/data
+  nginx:
+    command: cob docker nginx-start
+    environment:
+      _DHCPAWN_PRODUCTION_LDAP: 'False'
+      _DHCPAWN_LOG_LEVEL: '11'
+    depends_on:
+    - wsgi
+    image: git.infinidat.com:4567/infradev/dhcpawn:latest
+    ports:
+    - 8000:80
+    logging:
+      driver: syslog
+  rabbitmq:
+    image: rabbitmq
+    logging:
+      driver: syslog
+  worker:
+    command: cob celery start-worker
+    environment: &id001
+      COB_CELERY_BROKER_URL: amqp://guest:guest@rabbitmq
+      COB_CONFIG_DIR: /conf
+      COB_DATABASE_URI: postgresql://dhcpawn@db/dhcpawn
+      _DHCPAWN_PRODUCTION_LDAP: 'False'
+      _DHCPAWN_LOG_LEVEL: '11'
+    image: git.infinidat.com:4567/infradev/dhcpawn:latest
+    logging:
+      driver: syslog
+  wsgi:
+    command: cob docker wsgi-start
+    depends_on:
+    - db
+    environment: *id001
+    image: git.infinidat.com:4567/infradev/dhcpawn:latest
+    volumes:
+    - conf:/conf
+    logging:
+      driver: syslog
+version: '3'
+volumes:
+  conf: null
+  db: null
+

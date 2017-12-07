@@ -1,0 +1,27 @@
+DHCPAWN TODO LIST
+
+* encapsulate LDAP timeout and server_down exceptions
+ in order to be able to retry ldap entry creation if it fails.
+ for now, i will try until success (perhaps set a timeout limit of 5 min? )
+
+
+* Improve ldap_delete by adding the retry option
+in cases where the operation gets an exception/fails for some reasons.
+
+* improve ldap_add by adding the retry option
+in cases where the operation gets an exception/fails for some reasons.
+
+* Update README to include usage cases examples for:
+- single host registration
+- single host deletion
+- multiple host registration
+- multiple host deletion
+- single host update
+- multiple hosts update ??
+
+* Update README to include a simple cheetsheet for code changes to deployment
+- change code locally
+- build image with a new tag (or use docker-compose)
+- load project locally to test changes
+- once changes look good, push image to registry
+- on dhcpawn server ,run docker pull and docker-compose restart ?

@@ -1,0 +1,28 @@
+.. dhcpawn documentation master file, created by
+   sphinx-quickstart on Tue Jun 27 10:56:09 2017.
+   You can adapt this file completely to your liking, but it should at least
+   contain the root `toctree` directive.
+
+
+Dhcpawn
+=======
+
+What is Dhcpawn?
+----------------
+
+
+Contents:
+
+.. toctree::
+   :maxdepth: 2
+
+   tutorial
+
+
+
+Indices and tables
+==================
+
+* :ref:`genindex`
+* :ref:`modindex`
+* :ref:`search`

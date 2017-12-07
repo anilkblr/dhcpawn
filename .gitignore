@@ -1,0 +1,17 @@
+/.cob
+dhcpawn.ipynb
+*.pyc
+dhcpawn.log
+.emacs.desktop
+*ipynb*
+__pycache__/
+dhcpsrv/.env/*
+dhcpsrv/*/*.pyc
+dhcpsrv/ansible/*.retry
+*.backup
+dhcpsrv/.vagrant
+*swp
+docker/*#*
+celerybeat-schedule
+.cob-sdist.tar.gz
+dhcpawn_tmuxconf.yml

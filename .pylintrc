@@ -1,0 +1,13 @@
+[MESSAGES CONTROL]
+disable=R,C,W
+
+[FORMAT]
+max-line-length=150
+
+[TYPECHECK]
+ignored-modules=cob,ldap
+
+[REPORTS]
+reports=no
+score=no
+output-format=parseable
