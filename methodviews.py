@@ -1,4 +1,4 @@
-import re 
+import re
 from ldap import ALREADY_EXISTS
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask
 from .help_functions import err_json, _get_or_none, get_by_id, get_by_field, DhcpawnError, gen_resp, \
@@ -32,12 +32,11 @@ def value_by_context(returned):
     else:
         return returned
 
-    
 
 class DhcpawnMethodView(MethodView):
     ''' Used to initiate a dhcpawn Request object '''
     def __init__(self):
-       self.drequest = Req() 
+       self.drequest = Req()
        self.res = None
        self.data = {}
        self.msg = None
@@ -46,7 +45,7 @@ class DhcpawnMethodView(MethodView):
        self.drequest_type = None
        self.drequest_tasks_count = None
        self.drequest_reply_url = None
-       
+
 class DRequestListAPI(DhcpawnMethodView):
 
     @gen_resp_deco
@@ -57,7 +56,6 @@ class DRequestListAPI(DhcpawnMethodView):
         self.msg = 'get all requests info'
 
 class DRequestBaseAPI(DhcpawnMethodView):
-
     def get_drequest_by_param(self, param):
         self.patterns = {k: patterns[k] for k in ('id',)}
         req = identify_param(Req, param, self.patterns)
@@ -65,7 +63,7 @@ class DRequestBaseAPI(DhcpawnMethodView):
             return req
         else:
             raise DhcpawnError('Bad param or no dhcpawn request with param %s' % param)
-        
+
 class DRequestAPI(DRequestBaseAPI):
 
     @gen_resp_deco
@@ -90,7 +88,6 @@ class DtaskListAPI(DhcpawnMethodView):
         self.msg = 'get all dtasks info'
 
 class DtaskBaseAPI(DhcpawnMethodView):
-
     def get_dtask_by_param(self, param):
         self.patterns = {k: patterns[k] for k in ('id',)}
         dtask = identify_param(Dtask, param, self.patterns)
@@ -98,7 +95,7 @@ class DtaskBaseAPI(DhcpawnMethodView):
             return dtask
         else:
             raise DhcpawnError('Bad param or no dhcpawn dtask with param %s' % param)
-        
+
 class DtaskAPI(DtaskBaseAPI):
 
     @gen_resp_deco
@@ -113,8 +110,6 @@ class DtaskAPI(DtaskBaseAPI):
         self.result = dtask.config()
         self.msg = 'get specific dhcpawn dtask info'
 
-    
-    
 ### HOST CLASSES
 class HostListAPI(DhcpawnMethodView):
 
@@ -136,7 +131,7 @@ class HostListAPI(DhcpawnMethodView):
             self.errors = e.__str__()
             self.msg = "Failed host registration"
             return
-        
+
         if not host:
             host = Host(name=self.data.get('hostname'),
                         mac=self.data.get('mac'),
@@ -147,7 +142,6 @@ class HostListAPI(DhcpawnMethodView):
         if subnet:
             ip = alloc_single_ip(subnet, ip)
             host.ip = ip
-            
         try:
             db.session.add(host)
             db.session.commit()
@@ -155,9 +149,8 @@ class HostListAPI(DhcpawnMethodView):
             self.errors = e.__str__()
             self.msg = "failed creating new host (while trying to commit to db). aborting.."
         else:
-        
             self.dtask = Dtask(self.drequest.id)
-            self.res = task_host_ldap_add.delay(host.id, self.dtask.id) 
+            self.res = task_host_ldap_add.delay(host.id, self.dtask.id)
             self.msg = 'host created in db. waiting for ldap update'
             self.drequest_type = 'create single host'
 
@@ -174,7 +167,6 @@ class HostListAPI(DhcpawnMethodView):
             return jsonify("Failed removing all Host records from DB")
 
 class HostBaseAPI(DhcpawnMethodView):
-        
     def get_host_by_param(self, param):
         '''
         param can be:
@@ -210,11 +202,11 @@ class HostBaseAPI(DhcpawnMethodView):
         #     name_by_mac = get_by_field_or_404(Host, 'mac', self.data.get('mac')).name
         # except DhcpawnError as e:
         #     self.errors = e.args[0]
-        #     return 
+        #     return
 
         # if not name_by_mac == host.name:
         #     self.errors = "Provided mac %s doesn't match the hostname %s" % (self.data.get('mac'), host.name)
-        #     return 
+        #     return
 
         # if 'ip' in self.data and not host.ip.address == self.data.get('ip'):
         #     try:
@@ -259,7 +251,7 @@ class HostBaseAPI(DhcpawnMethodView):
 
         self.dtask = Dtask(self.drequest.id)
         self.res = task_host_ldap_modify.delay(host.id, self.dtask.id, new_group_id=new_group_id, new_address_id=new_address_id)
-        self.msg = "Sent async ldap modify and db update on %s" % host.name 
+        self.msg = "Sent async ldap modify and db update on %s" % host.name
         self.drequest_type = "host update"
         # try:
         #     self.res = (task_host_ldap_delete(host.id, host.dn, self.drequest.id) |
@@ -297,7 +289,7 @@ class HostBaseAPI(DhcpawnMethodView):
 class HostAPI(HostBaseAPI):
     '''
     specific host manipulations
-    using regex 
+    using regex
     '''
     @gen_resp_deco
     def get(self, param):
@@ -370,7 +362,6 @@ class GroupListAPI(DhcpawnMethodView):
         # return jsonify(group.config())
 
 class GroupBaseAPI(DhcpawnMethodView):
-
     def get_group_by_param(self, param):
         '''
         param can be:
@@ -383,7 +374,7 @@ class GroupBaseAPI(DhcpawnMethodView):
             return group
         else:
             raise DhcpawnError('Bad param or no group with param %s' % param)
-    
+
 class GroupAPI(GroupBaseAPI):
 
     @gen_resp_deco
@@ -404,7 +395,7 @@ class GroupAPI(GroupBaseAPI):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        
+
         data = request.get_json(force=True)
         if group.hosts.all():
             _logger.info("Deleteing all hosts in group %s from LDAP" % group.name)
@@ -439,7 +430,7 @@ class GroupAPI(GroupBaseAPI):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        
+
         hosts = []
         for host in group.hosts.all():
             host.ldap_delete()
@@ -456,7 +447,6 @@ class GroupAPI(GroupBaseAPI):
         # return jsonify(dict(items=[group.config() for group in Group.query.all()]))
 
 # Subnet CLASSES
-    
 class SubnetListAPI(DhcpawnMethodView):
 
     @gen_resp_deco
@@ -483,7 +473,7 @@ class SubnetListAPI(DhcpawnMethodView):
         else:
             self.errors = "A subnet with this name %s already exists" % data.get('name')
             return
-        # if Subnet.query.filter_by(name=data.get('name')).all(): 
+        # if Subnet.query.filter_by(name=data.get('name')).all():
             # return err_json("A subnet with this name %s already exists" % data.get('name'))
         subnet = Subnet(name=data.get('name'),
                         netmask=data.get('netmask'),
@@ -493,7 +483,6 @@ class SubnetListAPI(DhcpawnMethodView):
         db.session.commit()
         if subnet.deployed:
             subnet.ldap_add()
-            
         self.result = subnet.config()
 
 class SubnetBaseAPI(DhcpawnMethodView):
@@ -540,7 +529,6 @@ class SubnetAPI(SubnetBaseAPI):
             subnet.options = json.dumps(data.get('options'))
         if 'deployed' in data:
             subnet.deployed = data.get('deployed')
-        
         if subnet.deployed:
             subnet.ldap_modify()
         else:
@@ -572,7 +560,7 @@ class SubnetAPI(SubnetBaseAPI):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        
+
         for pool in subnet.pools.all():
             pool.ldap_delete()
             if pool.dhcprange:
@@ -580,16 +568,13 @@ class SubnetAPI(SubnetBaseAPI):
             db.session.delete(pool)
         for crange in subnet.calcranges.all():
             db.session.delete(crange)
-
         db.session.commit()
         subnet.ldap_delete()
         db.session.delete(subnet)
         db.session.commit()
-
         self.result = [{subnet.name:subnet.config()} for subnet in Subnet.query.all()]
 
 # IP CLASSES
-    
 class IPListAPI(DhcpawnMethodView):
 
     @gen_resp_deco
@@ -614,12 +599,12 @@ class IPListAPI(DhcpawnMethodView):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        
-        calcrange = get_by_id(CalculatedRange, data.get('calcrange'))
 
+        calcrange = get_by_id(CalculatedRange, data.get('calcrange'))
         ip = IP(address=address,
                 host_id=data.get('host'),
                 calcrange_id=data.get('calcrange'))
+
         # regular mode of work - no host_id given when creating ip instance
         # so its not deployable, next step would be creating the host ,attach it to
         # to this ip and then deploy host with ip to ldap
@@ -646,7 +631,6 @@ class IPListAPI(DhcpawnMethodView):
         try:
             for ip in IP.query.all():
                 db.session.delete(ip)
-
             db.session.commit()
             return jsonify("Cleared all ip records from DB")
 
@@ -670,8 +654,7 @@ class IPBaseAPI(DhcpawnMethodView):
     def disconnect_host_ip(self):
         ''' update the host connected to this ip, so that it will have no ip '''
         pass
-        
-        
+
 class IPAPI(IPBaseAPI):
 
     @gen_resp_deco
@@ -712,6 +695,7 @@ class IPAPI(IPBaseAPI):
                 host = get_by_field(Host, 'name', data.get('host'))
             except DhcpawnError as e:
                 return err_json(e.args[0])
+
             if ip.host_id == host.id:
                 return err_json("Host is already connected to this IP")
 
@@ -719,7 +703,6 @@ class IPAPI(IPBaseAPI):
 
         if 'deployed' in data:
             ip.deployed = data.get('deployed')
-
         db.session.add(ip)
         db.session.commit()
         ip.ldap_add()
@@ -766,7 +749,7 @@ class DhcpRangeListAPI(MethodView):
         ipmin = IPv4Address(data.get('min'))
         ipmax = IPv4Address(data.get('max'))
         deployed = data.get('deployed', False)
-        
+
         for iprange in DhcpRange.query.all():
             if iprange.contains(ipmin) or iprange.contains(ipmax):
                 return err_json("Range overlaps with existing ranges %s" % (iprange.id))
@@ -860,7 +843,7 @@ class PoolListAPI(MethodView):
             return err_json("Pool requires a name")
         if all(key not in data for key in ['subnet', 'subnet_name']):
             return err_json("Pool requires either a subnet id or a subnet name")
-        
+
         if Pool.query.filter(Pool.name == data.get('name')).all():
             return err_json("A pool by this name already exists")
 
@@ -874,9 +857,9 @@ class PoolListAPI(MethodView):
                 subnet_id=subnet_id,
                 options=json.dumps(data.get('options', {})),
                 deployed=False)
-        
+
         subnet = get_by_id(Subnet, pool.subnet_id)
-        
+
         db.session.add(pool)
         db.session.commit()
         if pool.deployed:
@@ -910,7 +893,7 @@ class PoolAPI(MethodView):
             pool.name = data.get('name')
         if 'subnet' in data:
             pool.subnet_id = data.get('subnet')
-        
+
         if 'options' in data:
             pool.options = json.dumps(data.get('options'))
         if 'deployed' in data:
@@ -939,7 +922,6 @@ class PoolAPI(MethodView):
 # def is_ip_taken(ip):
 #     ''' returns the IPv4address(ip) is its available. otherwise ,will raise Dhcpawnerror
 #     with an explanatory msg'''
-    
 #     try:
 #         res = IP.query.filter_by(address=ip).first()
 #     except Exception as e:
@@ -956,7 +938,7 @@ def identify_param(model, param, patterns):
             if re.match(pat, param):
                 return get_by_field(model, ptype, param)
     return None
-    
+
 class MultipleAction(DhcpawnMethodView):
 
     @gen_resp_deco
@@ -1013,7 +995,7 @@ class MultipleAction(DhcpawnMethodView):
                         # clear_hosts(remove_hosts_on_fail)
                         self.errors = e.__str__()
                         self.msg = "Aborted request"
-                        # raise DhcpawnError(e.__str__()) 
+                        # raise DhcpawnError(e.__str__())
                     except Exception as e:
                         _logger.error("Unexpected exception %s" % e.__str__())
                         self.errors = e.args[0]
@@ -1112,7 +1094,7 @@ class MultipleAction(DhcpawnMethodView):
                 raise DhcpawnError('Failed hard delete (%s)' % e.__str__())
             else:
                 return
-        
+
         try:
             validated_host_dict = validate_data_before_deletion(self.data)
         except DhcpawnError as e:
@@ -1125,7 +1107,7 @@ class MultipleAction(DhcpawnMethodView):
 
         tasks_group = []
         dtasks_group = []
-        
+
         for h in validated_host_dict:
             dtasks_group.append(Dtask(self.drequest.id))
             tasks_group.append(task_host_ldap_delete.s(validated_host_dict[h].id, dtasks_group[-1].id))
@@ -1155,8 +1137,7 @@ def hard_delete(data):
         group = data[h]['group']
         _hard_delete_by_name(name, group)
         # _hard_delete_by_mac(mac)
-        
-            
+
 def _hard_delete_by_name(name,  group):
     try:
         host = Host.query.filter_by(name=name).first()
@@ -1180,7 +1161,7 @@ def _hard_delete_by_name(name,  group):
                 db.session.rollback()
             except:
                 pass
-        
+
 def _hard_delete_by_mac(mac):
     try:
         host = Host.query.filter_by(mac=mac).first()
@@ -1190,7 +1171,7 @@ def _hard_delete_by_mac(mac):
         db.session.commit()
     except:
         pass
-    
+
 def validate_data_before_registration(data):
     """
     a wrapper for the validation function. it will go over all hosts in request and
@@ -1259,7 +1240,6 @@ def validate_data_before_deletion(data):
             validated_host_dict[h] = host
 
     return validated_host_dict
-    
 
 def alloc_single_ip(su, addr=None):
     """
@@ -1299,7 +1279,6 @@ def clear_ips(ips):
 
     _logger.debug("Finished removing ips from DB after fail")
 
-
 def clear_hosts(hosts):
     """
     :param hosts: list of host db entries
@@ -1322,11 +1301,11 @@ def clear_hosts(hosts):
             pass
             # raise DhcpawnError(e.__str__())
         _logger.info("Cleaned all remainders of %s from LDAP/DB" % name)
-        
+
     _logger.info("Finished removing hosts from DB after fail")
 
 
-### Sync 
+### Sync
 
 class Sync(DhcpawnMethodView):
 
@@ -1351,7 +1330,7 @@ class Sync(DhcpawnMethodView):
         self.d = dict([('hosts', {}),
                        ('groups', {}),
                        ('subnets', {})])
-        
+
         if group_name:
             try:
                 gr = Group.validate_by_name(group_name)
@@ -1363,12 +1342,12 @@ class Sync(DhcpawnMethodView):
             # gr = get_by_field_or_404(Group, 'id', group_id)
                 self.msg = "Evaluating group sync status for %s" % gr.name
                 _logger.info(self.msg)
-                
+
                 # dtask = Dtask(self.drequest.id)
                 # self.res = task_get_group_sync_stat.delay(gr.name, dtask.id)
                 # self.msg = "get sync stat request for %s running async" % group_name
                 try:
-                    self.d['hosts'][gr.name] = gr.get_sync_stat()                    
+                    self.d['hosts'][gr.name] = gr.get_sync_stat()
                 except DhcpawnError as e:
                     self.errors = e.__str__()
                     self.msg = "Failed getting sync status for group %s" % group_name
@@ -1377,7 +1356,6 @@ class Sync(DhcpawnMethodView):
             # tasks_group = []
             self.msg = "Evaluate sync stat for all groups"
             for gr in Group.query.all():
-                
                 _logger.debug("Evaluating group sync status for %s" % gr.name)
             #     dtask = Dtask(self.drequest.id)
             #     tasks_group.append(task_get_group_sync_stat.s(gr.name, dtask.id))
@@ -1389,7 +1367,6 @@ class Sync(DhcpawnMethodView):
             # except Exception as e:
             #     self.errors = e.__str__()
             #     self.msg = "Failed sending async job for all groups get sync stat"
-                
                 try:
                     self.d['hosts'][gr.name] = gr.get_sync_stat()
                 except Exception as e:
@@ -1409,7 +1386,7 @@ class Sync(DhcpawnMethodView):
         if group_id:
             # need to fix next line - either find group name from group_id or change seld.get
             # method to use group_id
-            self.get(group_name=group_id, sync=True) # self.d is created/updated 
+            self.get(group_name=group_id, sync=True) # self.d is created/updated
         else:
             self.get(sync=True)
         no_diff = True
@@ -1422,8 +1399,6 @@ class Sync(DhcpawnMethodView):
         host_stat_dict = self.hosts_sync(self.d['hosts'])
         return value_by_context({'pre sync': {k:v for k,v in self.d['hosts'].items() if not v['group is synced']},
                                  'post sync': {k:v for k,v in host_stat_dict.items() if v} })
-
-
 
     def hosts_sync(self, host_diffs):
         """
