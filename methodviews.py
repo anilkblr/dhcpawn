@@ -193,80 +193,11 @@ class HostBaseAPI(DhcpawnMethodView):
         except DhcpawnError as e:
             self.errors = e.args[0]
             return
-        # changed = False
-        # if not self.data.get('mac'): # mac / hostname correspondance
-        #     self.errors = "no mac address provided"
-        #     return
-
-        # try:
-        #     name_by_mac = get_by_field_or_404(Host, 'mac', self.data.get('mac')).name
-        # except DhcpawnError as e:
-        #     self.errors = e.args[0]
-        #     return
-
-        # if not name_by_mac == host.name:
-        #     self.errors = "Provided mac %s doesn't match the hostname %s" % (self.data.get('mac'), host.name)
-        #     return
-
-        # if 'ip' in self.data and not host.ip.address == self.data.get('ip'):
-        #     try:
-        #         #new_address = is_ip_taken(self.data.get('ip'))
-        #         new_address = IP().allocate_specific_ip(self.data.get('ip'))
-        #         new_address_id = new_address.id
-        #         changed = True
-        #     except DhcpawnError as e:
-        #         self.errors = e.args[0]
-        #         return
-        # else:
-        #     new_address_id = None
-
-        # if 'group' in self.data and not host.group.name == self.data.get('group'):
-        #     changed = True
-        #     try:
-        #         new_group = get_by_field_or_404(Group, 'name', self.data.get('group'))
-        #         new_group_id = new_group.id
-        #     except DhcpawnError as e:
-        #         self.errors = e.args[0]
-        #         return
-        # else:
-        #     new_group_id = None
-
-        # if 'deployed' in self.data and not host.deployed == self.data.get('deployed'):
-        #     # changing deployment status:
-        #     # current False -> True : meaning we want it to be deployed to LDAP
-        #     # current True -> False : meaning we want to remove from LDAP ??? dont support for now.
-        #     if host.deployed == False and self.data.get('deployed') == "True":
-        #         changed = True
-        #         host.deployed = True
-        #     else:
-        #         self.errors = "Trying to change deployment status from True to False - not supported for now"
-        #         return
-        # if host.deployed and not host.group.deployed:
-        #     self.errors = "Cannot deploy host as subobject of non-deployed group"
-        #     return
-
-        # if not changed:
-        #     self.errors = 'no real error - just nothing to change'
-        #     return
 
         self.dtask = Dtask(self.drequest.id)
         self.res = task_host_ldap_modify.delay(host.id, self.dtask.id, new_group_id=new_group_id, new_address_id=new_address_id)
         self.msg = "Sent async ldap modify and db update on %s" % host.name
         self.drequest_type = "host update"
-        # try:
-        #     self.res = (task_host_ldap_delete(host.id, host.dn, self.drequest.id) |
-        #                 task_host_ldap_add(host.id, self.drequest.id))
-        # except DhcpawnError as e:
-        #     self.errors = e.args[0]
-        #     return
-
-        # if new_address:
-        #     host.ip.address = new_address
-        # if new_group:
-        #     host.group = new_group
-        # db.session.add(host)
-        # db.session.commit()
-
 
     def delete_host(self, host):
         """
@@ -277,14 +208,6 @@ class HostBaseAPI(DhcpawnMethodView):
         self.res = task_host_ldap_delete.delay(host.id, self.dtask.id)
         self.msg = "Async ldap delete and db delete sent for %s" % host.name
         self.drequest_type = "delete host"
-        # try:
-        #     self.res = task_host_full_delete.delay(host.id, self.drequest.id)
-        # except DhcpawnError as e:
-        #     self.errors = "Failed removing LDAP entry for host %s ( e.args[0] )" % host.name
-        #     # return err_json("Failed removeing LDAP entry for host %s ( e.args[0] )" % host.name)
-        # return jsonify({'status':'ongoing',
-        #                 'task_id': res.task_id})
-
 
 class HostAPI(HostBaseAPI):
     '''
@@ -300,8 +223,6 @@ class HostAPI(HostBaseAPI):
             self.errors = e.args[0]
             return
         self.result = host.config()
-        # return gen_resp(result=host.config(), msg="get specific host")
-        # return jsonify(host.config())
 
     @gen_resp_deco
     @update_req
@@ -919,19 +840,6 @@ class PoolAPI(MethodView):
 
 ###### Help functions
 
-# def is_ip_taken(ip):
-#     ''' returns the IPv4address(ip) is its available. otherwise ,will raise Dhcpawnerror
-#     with an explanatory msg'''
-#     try:
-#         res = IP.query.filter_by(address=ip).first()
-#     except Exception as e:
-#         raise DhcpawnError('something went wrong while looking for %s in DB (%s)' % (ip, e.args[0]))
-#     else:
-#         if res:
-#             raise DhcpawnError('ip %s already taken' % ip)
-#         else:
-#             return IPv4Address(ip)
-
 def identify_param(model, param, patterns):
     for ptype in patterns:
         for pat in patterns[ptype]:
@@ -1357,16 +1265,6 @@ class Sync(DhcpawnMethodView):
             self.msg = "Evaluate sync stat for all groups"
             for gr in Group.query.all():
                 _logger.debug("Evaluating group sync status for %s" % gr.name)
-            #     dtask = Dtask(self.drequest.id)
-            #     tasks_group.append(task_get_group_sync_stat.s(gr.name, dtask.id))
-
-            # job = group(tasks_group)
-            # try:
-            #     self.res = job.apply_async()
-            #     self.msg = "Get sync status for all groups will run asynchronously"
-            # except Exception as e:
-            #     self.errors = e.__str__()
-            #     self.msg = "Failed sending async job for all groups get sync stat"
                 try:
                     self.d['hosts'][gr.name] = gr.get_sync_stat()
                 except Exception as e:

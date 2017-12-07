@@ -32,13 +32,8 @@ def gen_modlist(obj_dict, options):
                     for _o in o:
                         tmpl.append(_o.encode('utf-8'))
                     boptions[option].append(tmpl)
-                # import pudb;pudb.set_trace()
-        #     options[option] = [o.encode('utf-8') for o in options[option]]
-
         obj_dict.update(boptions)
-        # _logger.debug(obj_dict)
     return obj_dict
-
 
 class LDAPModel(db.Model):
     __abstract__ = True
@@ -50,7 +45,6 @@ class LDAPModel(db.Model):
         return dict()
 
     def ldap_add(self):
-        # _logger.info("LDAP connectivity: %s" % current_app.ldap_obj.simple_bind_s())
         if self.deployed:
 
             # from cob.app import build_app
@@ -62,10 +56,8 @@ class LDAPModel(db.Model):
                 try:
                     current_app.ldap_obj.add_s(self.dn(), modlist.addModlist(self.modlist()))
                 except ldap.TIMEOUT as e:
-                    # _logger.error(f'ldap add got ldap timeout exception on dn {self.dn()}. err msg is {e.__str__()}. trying again..')
                     pass
                 except ldap.SERVER_DOWN as e:
-                    # _logger.error(f'ldap add got ldap server_down exception on dn {self.dn()}. err msg is {e.__str__()}. trying again..')
                     pass
                 except Exception as e:
                     _logger.error(f'ldap add unexpected exception {e.__str__()} - trying again')
@@ -81,6 +73,7 @@ class LDAPModel(db.Model):
             dn = self.dn()
 
         try:
+
             # from cob.app import build_app
             # app = build_app(use_cached=True)
             return current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
@@ -90,7 +83,6 @@ class LDAPModel(db.Model):
         except Exception as e:
             _logger.warning("unexcepted exception %s" % e.__str__())
             return {}
-            # raise DhcpawnError("Missing DN is: %s" % dn)
         _logger.info("Found")
 
     def ldap_modify(self, dn=None):
@@ -99,6 +91,7 @@ class LDAPModel(db.Model):
         _logger.debug("Modify LDAP entry: %s" % dn)
         if self.deployed:
             try:
+
                 # data taken from ldap
                 objs = current_app.ldap_obj.search_s(dn, SCOPE_BASE)
                 _logger.debug("Current data in DB: %s" % self.config())
@@ -114,7 +107,6 @@ class LDAPModel(db.Model):
             dn = self.dn()
 
         if self.deployed:
-            # _logger.debug("Delete LDAP entry %s" % dn)
             tries = 0
             while True:
                 _logger.debug(f"Delete LDAP entry {self.dn()} (tries={tries})")
@@ -129,9 +121,6 @@ class LDAPModel(db.Model):
                 finally:
                     _logger.debug(f"ldap delete {self.dn()} succeeded")
                     break
-                # _logger.debug(e.__str__())
-                # raise DhcpawnError(e.__str__())
-                # raise
 
     @classmethod
     def validate_by_name(cls, name):
@@ -373,6 +362,7 @@ class Host(LDAPModel):
                 raise
 
         if 'deployed' in kwargs and not self.deployed == kwargs.get('deployed'):
+
             # changing deployment status:
             # current False -> True : meaning we want it to be deployed to LDAP
             # current True -> False : meaning we want to remove from LDAP ??? dont support for now.
@@ -548,6 +538,7 @@ class Subnet(LDAPModel):
     deployed = db.Column(db.Boolean, default=True)
 
     def dn(self):
+
         # return 'cn=%s,ou=Subnets,%s' % (self.name, server_dn())
         return 'cn=%s,%s' % (self.name, server_dn())
 
@@ -555,6 +546,7 @@ class Subnet(LDAPModel):
         mod_dict = dict(objectClass=[b'dhcpSubnet', b'top'],
                 cn=[self.name.encode('utf-8')],
                 dhcpNetMask=[str(self.netmask).encode('utf-8')])
+
         # if self.ranges and self.ranges.deployed:
         #     mod_dict.update(dict(dhcpRange=[str('%s %s' % (self.ranges.min, self.ranges.max)).encode()]))
         return gen_modlist(mod_dict, self.options)
@@ -715,25 +707,6 @@ class IP(db.Model):
                     return ip
             else:
                 raise DhcpawnError('No calculated range for %s' % addr)
-        #         cr_id = None
-        #         for cr in CalculatedRange.query.all():
-        #             if cr.contains(IPv4Address(addr)):
-        #                 cr_id = cr.id
-        #         if not cr_id:
-        #             raise DhcpawnError("Specific ip address %s cant be referenced to any of the calculated ranges" % addr)
-
-        #     ip = IP(address=IPv4Address(addr),
-        #             calcrange_id=cr_id)
-        #     db.session.add(ip)
-        #     try:
-        #         db.session.commit()
-        #     except Exception as e:
-        #         raise DhcpawnError(e.__str__())
-        #     else:
-        #         return ip
-        # # else:
-        #     raise DhcpawnError("Specific ip address %s is taken" % addr)
-
 
     @staticmethod
     def get_calcrange(addr):
@@ -761,8 +734,6 @@ class IP(db.Model):
             return True
         return False
 
-
-
 class DhcpRange(db.Model):
     '''
     model that holds the range of dhcp addresses , that is related to a pool
@@ -786,6 +757,7 @@ class DhcpRange(db.Model):
 
     def ldap_add(self):
         if self.deployed:
+
             # once we have a dhcprange and a related pool ,we can deploy the pool
             # to ldap + changing the deployed status to True in DB.
             pool = _get_or_none(Pool, self.pool_id)
@@ -799,6 +771,7 @@ class DhcpRange(db.Model):
 
 
     def config(self):
+
         # pool = _get_or_none(Pool, self.pool_id)
         return dict(id=self.id,
                     type='DhcpRange',
@@ -841,6 +814,7 @@ class CalculatedRange(db.Model):
         return free
 
     def allocate_free_ips(self, num=1):
+
         # return the first IP address in the range, from the top, without conflict
         # if num is greater than 1, returns a list of ips
         # import pudb;pudb.set_trace()
@@ -851,6 +825,7 @@ class CalculatedRange(db.Model):
         while top > self.min:
             top -= 1
             if top not in ips:
+
                 # found a free ip, allocating it
                 # _logger.debug("Allocating ip %s from calculated range %s in subnet %s" % (top, self.id, self.subnet_id))
                 fip = IP(address=top, calcrange_id=self.id)
@@ -870,35 +845,11 @@ class CalculatedRange(db.Model):
         # _logger.debug("Didnt get all the needed ips in current calculated range %s" % self.id)
         return free
 
-        # # end of my code
-        # if len(addresses) < num:
-        #     _logger.debug("We dont have enough free ips in this range %s (got only %s out of %s)" %
-        #                   (self.id, len(addresses), num))
-        # return addresses
-
-
-        # ips.sort(reverse=True)
-        # ips = [self.max + 1] + ips + [self.min - 1]
-        # i = 0
-        # j = 0
-        # for ip in ips:
-        #     while i < num:
-        #         ip_j = top - j
-        #         j += 1
-        #         if ip_j < self.min:
-        #             return []
-        #         if ip >= ip_j:
-        #             break
-        #         addresses.append(ip_j)
-        #         i += 1
-        #     if i == num:
-        #         break
-        # return addresses
-
     def contains(self, ip):
         return ip >= self.min and ip <= self.max
 
     def config(self):
+
         # subnet = _get_or_none(Subnet, self.subnet_id)
         return dict(id=self.id,
                     type='CalculatedRange',
@@ -1019,38 +970,8 @@ class Req(db.Model):
             self.replied = True
             self.commit()
 
-
-
-
-        # tasks_stat = {}
-        # if self.celery_tasks_list == json.dumps([]):
-        #     # no celery tasks for this request
-        #     return
-        # if self.status == 'Done':
-        #     return
-        # for tid in json.loads(self.celery_tasks_list):
-        #     tobj = celery_app.AsyncResult(tid)
-        #     tasks_stat[tid] = tobj.status
-
-        # _logger.info(json.dumps(tasks_stat))
-
-        # if "FAILURE" in tasks_stat.values():
-        #     self.status = 'Failed'
-
-        # elif all(k == 'SUCCESS' for k in tasks_stat.values()):
-        #     self.status = "Done"
-
-        # elif any(k in tasks_stat.values() for k in ['PENDING', 'RETRY']):
-
-        #     self.status = "OnGoing"
-        # else:
-        #     self.status = "WTF"
-
-        # if db.session.is_modified(self):
-        #     db.session.add(self)
-        #     db.session.commit()
-
-    def update_drequest(self,drequest_type=None, drequest_reply_url=None, drequest_result=None, params=None, tasks_list=None, tasks_count=None):
+    def update_drequest(self, drequest_type=None, drequest_reply_url=None, drequest_result=None,
+                        params=None, tasks_list=None, tasks_count=None):
 
         if params:
             self.params = json.dumps(params)
