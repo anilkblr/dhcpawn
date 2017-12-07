@@ -175,7 +175,7 @@ class HostBaseAPI(DhcpawnMethodView):
         3. name starting with a letter and could contain numbers and some special chars
         '''
         self.patterns = {k: patterns[k] for k in ('id', 'mac', 'name')}
-        host = identify_param(Host, param, self.patterns)        
+        host = identify_param(Host, param, self.patterns)
         if host:
             return host
         else:
