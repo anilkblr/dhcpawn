@@ -13,7 +13,7 @@ import ldap
 from .ldap_utils import server_dn
 from sqlalchemy.ext.declarative import declared_attr
 from sqlalchemy.exc import IntegrityError
-from .help_functions import _get_or_none, get_by_field, DhcpawnError, get_by_id
+from .help_functions import _get_or_none, get_by_field, DhcpawnError, get_by_id, parse_ldap_entry
 
 _logger = logbook.Logger(__name__)
 
@@ -68,15 +68,17 @@ class LDAPModel(db.Model):
                     _logger.debug(f"ldap add {self.dn()} succeeded")
                     break
 
-    def ldap_get(self, dn=None):
+    def ldap_get(self, dn=None, parse=False):
         if not dn:
             dn = self.dn()
 
         try:
+            res = current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
+            if parse:
+                return parse_ldap_entry(res)
+            else:
+                return res
 
-            # from cob.app import build_app
-            # app = build_app(use_cached=True)
-            return current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
         except NO_SUCH_OBJECT:
             _logger.debug("Missing DN is: %s" % dn)
             return None
@@ -325,7 +327,27 @@ class Host(LDAPModel):
 
         if not host:
             raise DhcpawnError("No host with these params %s" % kwargs)
+
+        try:
+            host.validate_db_vs_ldap()
+        except DhcpawnError as e:
+            _logger.error(e.__str__())
+            raise
+
         return host
+
+    def validate_db_vs_ldap(self):
+        """take DB entry and compare to LDAP
+        compare mac and ip
+        """
+        ldap_entry = self.ldap_get(parse=True)
+        ldap_mac = ldap_entry[self.name]['mac']
+        ldap_ip = ldap_entry[self.name]['ip']
+        if not ldap_mac == self.mac:
+            raise DhcpawnError('%s- DB-LDAP validation failed - mac addresses are different (DB: %s , LDAP: %s)' % (self.name, self.mac, ldap_mac))
+        if not ldap_ip == self.ip:
+            raise DhcpawnError('%s- DB-LDAP validation failed - ip addresses are different (DB: %s , LDAP: %s)' % (self.name, self.ip.address, ldap_ip))
+
 
     def update(self, **kwargs):
         ''' Host modify method '''

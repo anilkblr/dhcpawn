@@ -221,7 +221,7 @@ def task_host_ldap_delete(self, hid, dtask_id):
     just delete LDAP entry for a specific host
     hid = host id
     '''
-    _logger.info("inside task_host_ldap_delete")
+    _logger.debug("inside task_host_ldap_delete")
     current_tid = self.request.id # task_id from this task instance
     host = Host.query.get(hid)
     dtask = Dtask.query.get(dtask_id)
@@ -239,10 +239,12 @@ def task_host_ldap_delete(self, hid, dtask_id):
         )
     else:
         try:
+            _logger.debug('Host (%s) was also be deleted from DB', host.name)
             if host.ip:
                 db.session.delete(host.ip)
             db.session.delete(host)
             db.session.commit()
+
         except Exception as e:
             err_str = 'DB delete failed (%s)' % e.__str__()
             dtask.update(

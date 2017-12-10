@@ -166,3 +166,22 @@ def gen_drequest_in_db(func):
         returned = func(*args, **kwargs)
         return returned
     return decorator
+
+def parse_ldap_entry(entry):
+    """ when running ldap, if everything was ok,
+    we get a list with data. this func will parse it
+    into a dict.
+    """
+    tmpd = dict()
+    info = entry[0]
+    dn = info[0]
+    objectClass = info[1]['objectClass']
+    cn = info[1]['cn'][0].decode('utf-8')
+    dhcpStatements = info[1]['dhcpStatements'][0].decode('utf-8').split()[1] if 'dhcpStatements' in info[1] else None
+    dhcpHWAddress = info[1]['dhcpHWAddress'][0].decode('utf-8').split()[1] if 'dhcpHWAddress' in info[1] else None
+    tmpd[cn] = {'dn': dn,
+                'ip': dhcpStatements,
+                'mac': dhcpHWAddress,
+                'objClass': objectClass
+    }
+    return tmpd
