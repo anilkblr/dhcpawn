@@ -1,18 +1,16 @@
 # cob: type=models
-from cob import db
-from cob.celery.app import celery_app
 import logbook
-from flask import current_app, has_request_context
-from cob.project import get_project
-from ldap import modlist, SCOPE_BASE, NO_SUCH_OBJECT, SCOPE_SUBTREE
-from ipaddress import IPv4Address, IPv4Network
-from sqlalchemy_utils import IPAddressType
 import json
 import requests
 import ldap
+
+from flask import current_app
+from ldap import modlist, SCOPE_BASE, NO_SUCH_OBJECT, SCOPE_SUBTREE
+from ipaddress import IPv4Address, IPv4Network
+from sqlalchemy_utils import IPAddressType
+from cob import db
+
 from .ldap_utils import server_dn
-from sqlalchemy.ext.declarative import declared_attr
-from sqlalchemy.exc import IntegrityError
 from .help_functions import _get_or_none, get_by_field, DhcpawnError, get_by_id, parse_ldap_entry
 
 _logger = logbook.Logger(__name__)
@@ -47,8 +45,6 @@ class LDAPModel(db.Model):
     def ldap_add(self):
         if self.deployed:
 
-            # from cob.app import build_app
-            # app = build_app(use_cached=True)
             tries = 0
             while True:
                 _logger.debug(f"Add LDAP entry {self.dn()} (tries={tries})")
@@ -99,7 +95,6 @@ class LDAPModel(db.Model):
                 _logger.debug("Current data in DB: %s" % self.config())
                 _logger.debug("Current DN in LDAP: %s" % str(objs[0][1]))
                 if objs[0][1] != dict(self.modlist()):
-                    import pudb;pudb.set_trace()
                     current_app.ldap_obj.modify_s(dn, modlist.modifyModlist(objs[0][1], dict(self.modlist())))
             except NO_SUCH_OBJECT:
                 self.ldap_add()
@@ -438,7 +433,11 @@ class Group(LDAPModel):
         :return: group dict with amount, "only in ldap", "only in db" and content diffs
         """
 
-        gr_diff = {'group is synced':True}
+        _logger.debug("Inside get_sync_status")
+        _logger.debug(f"Group name {self.name}")
+
+        gr_diff = {self.name: {'group is synced':True, 'info':{}}}
+        info = gr_diff[self.name]['info']
         ldap_records = self.ldap_get()[1:]
         db_records = self.hosts.all()
 
@@ -446,36 +445,90 @@ class Group(LDAPModel):
         ldp = len(ldap_records)
         ldb = len(db_records)
         if not ldp == ldb:
-            gr_diff.setdefault('amount', {})
-            gr_diff['amount']['ldap'] = ldp
-            gr_diff['amount']['db'] = ldb
-            gr_diff['amount']['diff'] = abs(ldb-ldp)
+            info.setdefault('amount', {})
+            info['amount']['ldap'] = ldp
+            info['amount']['db'] = ldb
+            info['amount']['diff'] = abs(ldb-ldp)
 
         # only in ldap
         for ldap_host_dn in ldap_records:
             ldap_name = ldap_host_dn[1]['cn'][0].decode('utf-8')
             if not Host.query.filter_by(name=ldap_name).first():
-                gr_diff.setdefault('only in ldap', [])
+                info.setdefault('only in ldap', [])
                 _logger.debug("Entry exists only in LDAP %s" % ldap_name)
-                gr_diff['only in ldap'].append(ldap_name)
+                info['only in ldap'].append(ldap_name)
 
         # only in db
         for h in db_records:
             if not h.ldap_get():
                 _logger.debug("Entry exists only in DB %s" % h.name)
-                gr_diff.setdefault('only in db', [])
-                gr_diff['only in db'].append(h.name)
+                info.setdefault('only in db', [])
+                info['only in db'].append(h.name)
 
         # content
         gr_stat = self.get_host_content_diff()
         if gr_stat:
-            gr_diff.setdefault('content',gr_stat)
+            info.setdefault('content',gr_stat)
 
-        if gr_diff.get('amount') or gr_diff.get('only in db') or gr_diff.get('only in ldap') or gr_diff.get('content'):
-            _logger.notice("Amount diffs exists per group %s" %  self.name)
-            gr_diff['group is synced'] = False
+        if info.get('amount') or info.get('only in db') or info.get('only in ldap') or info.get('content'):
+            _logger.notice("diffs exist per group %s" %  self.name)
+
+            gr_diff[self.name]['group is synced'] = False
 
         return gr_diff
+
+    def group_sync(self):
+
+        try:
+            d = self.get_sync_stat()
+        except DhcpawnError:
+            raise
+
+
+        for g in d:
+            if d[g]['group is synced']:
+                return d, None
+            else:
+                host_stat_dict = self._hosts_sync(d)
+                return (d, host_stat_dict)
+
+
+    def _hosts_sync(self, host_diffs):
+
+        stat_dict = {}
+        for grp in host_diffs:
+            stat_dict.setdefault(grp,{})
+            if not host_diffs[grp]['group is synced']:
+                info = host_diffs[grp]['info']
+                gr = get_by_field(Group, 'name', grp)
+                if info.get('only in db'):
+                    stat_dict[grp].setdefault('added to ldap', [])
+                    for host2sync in info['only in db']:
+                        _logger.debug("Creating missing host %s in LDAP (found only on DB)" % host2sync)
+                        host = get_by_field(Host, 'name', host2sync)
+                        host.ldap_add()
+                        stat_dict[grp]['added to ldap'].append(host2sync)
+
+                if info.get('only in ldap'):
+                    stat_dict[grp].setdefault('deleted from ldap', [])
+                    for host2sync in info['only in ldap']:
+                        _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % host2sync)
+                        extra_host_dn = "cn=%s,%s" % (host2sync, gr.dn())
+                        ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
+                        if ldap_extra_host_dn:
+                            gr.ldap_delete(ldap_extra_host_dn[0][0])
+                            stat_dict[grp]['deleted from ldap'].append(host2sync)
+
+                if info.get('content'):
+                    stat_dict[grp].setdefault('updated in ldap', [])
+                    for hdict in info['content']['diff per host']:
+                        for host2sync in hdict:
+                            host = get_by_field(Host, 'name', host2sync)
+                            host.ldap_delete()
+                            host.ldap_add()
+                            stat_dict[grp]['updated in ldap'].append(host2sync)
+
+        return stat_dict
 
     def get_host_content_diff(self):
         """
@@ -489,7 +542,7 @@ class Group(LDAPModel):
         for hst in Host.query.filter_by(group=self):
 
             db_entry = hst.config()
-            ldap_entry = hst.ldap_get()
+            ldap_entry = hst.ldap_get(parse=True)
 
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
@@ -516,27 +569,21 @@ class Group(LDAPModel):
         """
         dbl = []
         ldapl = []
-        # name
-        dbl.append(db_entry['name'].encode('utf-8'))
-        ldapl.append(ldap_entry[0][1]['cn'][0])
-        # ip
-        db_ip = IP.query.filter_by(id=db_entry['id']).first()
-        if db_ip:
-            dbl.append(db_ip.address.compressed.encode('utf-8'))
-        else:
-            dbl.append(None)
-        if 'dhcpStatements' in ldap_entry[0][1]:
-            ldapl.append(ldap_entry[0][1]['dhcpStatements'][0].split()[1])
-        else:
-            ldapl.append(None)
-        # mac
-        dbl.append(db_entry['mac'].encode('utf-8'))
-        ldapl.append(ldap_entry[0][1]['dhcpHWAddress'][0].split()[1])
-        # group
-        db_gr = Group.query.filter_by(id=db_entry['group']).first()
-        if db_gr:
-            dbl.append(db_gr.name)
-        ldapl.append(ldap_entry[0][0].split(',')[1][3:])
+        # get db values
+        db_name = db_entry['name']
+        db_ip = db_entry['ip']
+        db_mac = db_entry['mac']
+        db_gr = db_entry['group_name']
+        # get ldap values
+        for k in ldap_entry:
+            ldap_name = k
+            ldap_ip = ldap_entry[k]['ip']
+            ldap_mac = ldap_entry[k]['mac']
+            ldap_gr = ldap_entry[k]['dn'].split(',')[1].replace("cn=","")
+
+        dbl.extend((db_name, db_ip, db_mac, db_gr))
+        ldapl.extend((ldap_name, ldap_ip, ldap_mac, ldap_gr))
+
         if dbl == ldapl:
             return True, []
         else:

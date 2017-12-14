@@ -1,21 +1,14 @@
 # cob: type=blueprint mountpoint=/rest
-import subprocess
-import json
-
-from sqlalchemy.exc import IntegrityError,InvalidRequestError, SQLAlchemyError
-from ldap import SCOPE_SUBTREE
-from ipaddress import IPv4Address, AddressValueError
 import logbook
-from werkzeug.exceptions import BadRequest, NotFound
 
-from flask import Blueprint, jsonify, abort, request, url_for, current_app, render_template, redirect
-from .models import Host, Group, Subnet, IP, Pool, CalculatedRange, Dtask
-from .tasks import task_get_sync_stat
+from ipaddress import IPv4Address, AddressValueError
+from werkzeug.exceptions import NotFound
+from flask import Blueprint, jsonify, abort, request
+from cob import db
+
+from .models import Host, Subnet, IP, Dtask
 from . import methodviews as mv
-from .help_functions import subnet_get_calc_ranges, get_by_id, get_by_field, _get_or_none, DhcpawnError, gen_resp_deco
-
-from cob import db, route
-from cob.project import get_project
+from .help_functions import get_by_id, get_by_field
 
 _logger = logbook.Logger(__name__)
 
@@ -29,10 +22,8 @@ api.add_url_rule('/dtasks/', view_func=mv.DtaskListAPI.as_view('dhcpawn_dtask_li
 api.add_url_rule('/dtasks/<param>', view_func=mv.DtaskAPI.as_view('dhcpawn_dtask_api'), methods=['GET'])
 
 api.add_url_rule('/hosts/', view_func=mv.HostListAPI.as_view('host_list_api'), methods=['GET', 'POST'])
-# api.add_url_rule('/hosts/byid/<int:host_id>', view_func=mv.HostByIdAPI.as_view('host_by_id_api'), methods=['GET', 'PUT', 'DELETE'])
-# api.add_url_rule('/hosts/byname/<hostname>', view_func=mv.HostByNameAPI.as_view('host_by_name_api') , methods=['GET', 'PUT','DELETE'])
-api.add_url_rule('/multiple/', view_func=mv.MultipleAction.as_view('multiple_action'), methods=['POST', 'DELETE'])
 
+api.add_url_rule('/multiple/', view_func=mv.MultipleAction.as_view('multiple_action'), methods=['POST', 'DELETE'])
 
 api.add_url_rule('/hosts/<param>', view_func=mv.HostAPI.as_view('host_api'), methods=['GET', 'PUT', 'DELETE'])
 
@@ -51,8 +42,8 @@ api.add_url_rule('/pools/<param>', view_func=mv.PoolAPI.as_view('pool_api'), met
 api.add_url_rule('/dhcpranges/', view_func=mv.DhcpRangeListAPI.as_view('dhcprange_list_api'), methods=['GET', 'POST'])
 api.add_url_rule('/calcranges/', view_func=mv.CalculatedLRangeListAPI.as_view('calcrange_list_api'), methods=['GET', 'POST'])
 
-api.add_url_rule('/getsyncstat/', view_func=mv.Sync.as_view('get_sync_stat_all_api'), methods=['GET'])
-api.add_url_rule('/getsyncstat/group/<group_name>', view_func=mv.Sync.as_view('get_sync_per_group_name_api'), methods=['GET'])
+api.add_url_rule('/sync/', view_func=mv.Sync.as_view('sync'), methods=['GET', 'POST'])
+api.add_url_rule('/sync/group/<group_name>', view_func=mv.Sync.as_view('sync_per_group'), methods=['GET', 'POST'])
 
 api.add_url_rule('/clearhosts/', view_func=mv.HostListAPI.as_view('clear_hosts_from_db'), methods=['DELETE'])
 api.add_url_rule('/clearips/', view_func=mv.IPListAPI.as_view('clear_ips_from_db'), methods=['DELETE'])
@@ -63,7 +54,6 @@ api.add_url_rule('/clearips/', view_func=mv.IPListAPI.as_view('clear_ips_from_db
 @api.route('/testme/', methods=['GET'])
 def testme():
     Subnet.validate_by_name('Data1')
-    # import pudb;pudb.set_trace()
 
 @api.route('/subnet/get_free_ip/<subnet>', methods=['GET'])
 def get_free_ip(subnet):
@@ -80,7 +70,7 @@ def get_host_ip(hostname):
     '''
     return host ip
     '''
-    host = get_by_field(Host, 'name', hostname )
+    host = get_by_field(Host, 'name', hostname)
     if host.ip:
         return jsonify(host.ip.config())
     return jsonify({})

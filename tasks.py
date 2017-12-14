@@ -1,26 +1,52 @@
 # cob: type=tasks
-from time import sleep
-from cob import task, db
-from flask import jsonify, current_app
-from cob.app import build_app
-from cob.celery.app import celery_app
-from cob.project import get_project
-from celery import group
-from .help_functions import DhcpawnError
-from .models import Host, Group, Subnet, Req, db, Dtask, IP
 import json
 import logbook
 import ldap
-from celery.contrib import rdb
+
+# from celery.contrib import rdb
+from cob import task, db
+from cob.project import get_project
+from .models import Host, Group, Req, db, Dtask, IP
+from .help_functions import DhcpawnError
+
+sync_every = get_project().config['sync_config']['group_sync_every']
+stat_every = get_project().config['sync_config']['sync_stat_every']
 
 _logger = logbook.Logger(__name__)
-@task()
-def task_get_sync_stat():
-    from . import methodviews as mv
-    # with build_app().app_context():
-    sync = mv.Sync()
-    return sync.get()
 
+@task(every=stat_every, use_app_context=True)
+def task_get_sync_stat():
+    # get sync stat for all groups
+    stat = dict()
+    try:
+        for gr in Group.query.all():
+            stat.update(gr.get_sync_stat())
+    except DhcpawnError as e:
+        _logger.error(e.__str__())
+        raise
+    else:
+        return stat
+
+@task(every=sync_every, use_app_context=True)
+def task_sync():
+    # run sync on all groups
+    stat = dict()
+    post_sync = dict([('groups', {})])
+    try:
+        for gr in Group.query.all():
+            tmpd, host_stat_dict = gr.group_sync()
+            stat.update(tmpd)
+            if host_stat_dict:
+                post_sync['groups'].update(host_stat_dict)
+    except DhcpawnError as e:
+        _logger.error(e.__str__())
+        raise
+    else:
+        if post_sync['groups']:
+            return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
+                    'post sync': {k:v for k,v in post_sync.items() if v} }
+        else:
+            return stat
 
 @task(bind=True)
 def task_get_group_sync_stat(self, group_name, dtask_id):

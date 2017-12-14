@@ -1,11 +1,11 @@
-from flask import jsonify, abort
-# from .models import Subnet, IP, CalculatedRange
-from cob import db
 import json
-from ipaddress import IPv4Address, IPv4Network
-from sqlalchemy.exc import IntegrityError
 import logbook
+
+from flask import jsonify
+from sqlalchemy.exc import IntegrityError
 from celery.result import AsyncResult
+from cob import db
+
 _logger = logbook.Logger(__name__)
 ##### Helping functions ########
 

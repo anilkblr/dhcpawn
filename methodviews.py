@@ -1,19 +1,20 @@
 import re
-from ldap import ALREADY_EXISTS
-from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask
-from .help_functions import err_json, _get_or_none, get_by_id, get_by_field, DhcpawnError, gen_resp, \
-    update_req, gen_resp_deco, gen_drequest_in_db, subnet_get_calc_ranges
+import logbook
+import json
 
 from flask import jsonify, request, has_request_context, url_for
 from flask.views import MethodView
-import json
-from ipaddress import IPv4Address, IPv4Network
-from cob import db
-import logbook
-from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify, task_get_group_sync_stat
+from ipaddress import IPv4Address
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from ldap import ALREADY_EXISTS
 from werkzeug.exceptions import BadRequest
 from celery import group
+from cob import db
+
+from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask
+from .help_functions import err_json, _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco, subnet_get_calc_ranges
+from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify
+
 
 _logger = logbook.Logger(__name__)
 
@@ -1217,124 +1218,85 @@ def clear_hosts(hosts):
 
 class Sync(DhcpawnMethodView):
 
-    # def __init__(self):
-    #     self.d = dict()
-
     @gen_resp_deco
+    @update_req
     def get(self, group_name=None, sync=False):
         """
-            function find diffs between ldap and db.
-            1. can be run as a standalone request (if one wants to know what are the current diffs),
-               and can only check all groups and not a specific group
-            2. can be the first part of a sync request thus request data is given to the POST req and
-               post function will transfer any relevant data to get function.
+        get sync status per group or for all groups.
+        :return: returns diff status
+        """
+        if not sync:
+            self.drequest_type = "Get Sync Status"
+        _logger.debug(self.drequest_type)
 
-            for now we only have hosts sync (the assumption is that groups/subnets will not
-            differ)
+        try:
+            isinstance(self.d, dict)
+        except AttributeError:
+            self.d = dict([('groups', {})])
 
-            :return: returns diff status
-            """
-        # self.drequest_type = "get sync status"
-        self.d = dict([('hosts', {}),
-                       ('groups', {}),
-                       ('subnets', {})])
-
-        if group_name:
-            try:
-                gr = Group.validate_by_name(group_name)
-            except DhcpawnError as e:
-                self.errors = e.__str__()
-            except Exception as e:
-                self.errors = e.__str__()
+        try:
+            if group_name:
+                gr = get_by_field(Group, 'name', group_name)
+                self.d['groups'].update(self.get_per_group(gr))
             else:
-            # gr = get_by_field_or_404(Group, 'id', group_id)
-                self.msg = "Evaluating group sync status for %s" % gr.name
-                _logger.info(self.msg)
-
-                # dtask = Dtask(self.drequest.id)
-                # self.res = task_get_group_sync_stat.delay(gr.name, dtask.id)
-                # self.msg = "get sync stat request for %s running async" % group_name
-                try:
-                    self.d['hosts'][gr.name] = gr.get_sync_stat()
-                except DhcpawnError as e:
-                    self.errors = e.__str__()
-                    self.msg = "Failed getting sync status for group %s" % group_name
-                    return
-        else: # get sync stat for all groups
-            # tasks_group = []
-            self.msg = "Evaluate sync stat for all groups"
-            for gr in Group.query.all():
-                _logger.debug("Evaluating group sync status for %s" % gr.name)
-                try:
-                    self.d['hosts'][gr.name] = gr.get_sync_stat()
-                except Exception as e:
-                    self.errors = e.__str__()
-                    self.msg = "Failed getting sync status for all groups (failing group is %s)" % gr.name
-                    return
+                for gr in Group.query.all():
+                    k = self.get_per_group(gr)
+                    self.d['groups'].update(self.get_per_group(gr))
+        except DhcpawnError as e:
+            self.errors = e.__str__()
+            self.msg = f"Failed getting sync status for group {group_name}"
+            return
 
         self.result = self.d
 
-    def post(self, group_id=None):
-        """
-        USED
-        sync db->ldap direction meaning we make sure ldap looks exactly as db.
-        :return:
-        """
+    def get_per_group(self, group):
 
-        if group_id:
-            # need to fix next line - either find group name from group_id or change seld.get
-            # method to use group_id
-            self.get(group_name=group_id, sync=True) # self.d is created/updated
+        try:
+            d = group.get_sync_stat()
+        except DhcpawnError as e:
+            self.errors = e.__str__()
+            self.msg = f"Failed getting sync status for group {group.name}"
+            raise
         else:
-            self.get(sync=True)
-        no_diff = True
-        for g in self.d['hosts']:
-            if not self.d['hosts'][g]['group is synced']:
-                no_diff = False
-                break
-        if no_diff:
-            return value_by_context(["No Diffs in {}".format(g) for g in self.d['hosts']])
-        host_stat_dict = self.hosts_sync(self.d['hosts'])
-        return value_by_context({'pre sync': {k:v for k,v in self.d['hosts'].items() if not v['group is synced']},
-                                 'post sync': {k:v for k,v in host_stat_dict.items() if v} })
+            return d
 
-    def hosts_sync(self, host_diffs):
+
+
+    @gen_resp_deco
+    @update_req
+    def post(self, group_name=None):
         """
-        hosts_diff dict contains two dicts:
-            content diffs
-            amount diffs
-        :param hosts_diff:
+        sync db->ldap direction meaning we make sure ldap looks exactly as dhcpawn db.
         :return:
         """
-        stat_dict = {}
-        for grp in host_diffs:
-            stat_dict.setdefault(grp,{})
-            if not host_diffs[grp]['group is synced']:
-                gr = get_by_field(Group, 'name', grp)
-                if host_diffs[grp].get('only in db'):
-                    stat_dict[grp].setdefault('added to ldap', [])
-                    for host2sync in host_diffs[grp]['only in db']:
-                        _logger.debug("Creating missing host %s in LDAP (found only on DB)" % host2sync)
-                        host = get_by_field(Host, 'name', host2sync)
-                        host.ldap_add()
-                        stat_dict[grp]['added to ldap'].append(host2sync)
+        self.drequest_type = "Run Sync"
+        _logger.debug(self.drequest_type)
 
-                if host_diffs[grp].get('only in ldap'):
-                    stat_dict[grp].setdefault('deleted from ldap', [])
-                    for host2sync in host_diffs[grp]['only in ldap']:
-                        _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % host2sync)
-                        extra_host_dn = "cn=%s,%s" % (host2sync, gr.dn())
-                        ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
-                        if ldap_extra_host_dn:
-                            gr.ldap_delete(ldap_extra_host_dn[0][0])
-                            stat_dict[grp]['deleted from ldap'].append(host2sync)
+        self.d = dict([('groups', {})])
+        post_sync = dict([('groups', {})])
+        try:
+            if group_name:
+                gr = get_by_field(Group, 'name', group_name)
+                tmpd, host_stat_dict = gr.group_sync()
+                self.d['groups'].update(tmpd)
+                if host_stat_dict:
+                    post_sync['groups'].update(host_stat_dict)
+            else:
+                for gr in Group.query.all():
+                    tmpd, host_stat_dict = gr.group_sync()
+                    self.d['groups'].update(tmpd)
+                    if host_stat_dict:
 
-                if host_diffs[grp].get('content'):
-                    stat_dict[grp].setdefault('updated in ldap', [])
-                    for hdict in host_diffs[grp]['content']['diff per host']:
-                        for host2sync in hdict:
-                            host = get_by_field(Host, 'name', host2sync)
-                            host.ldap_modify()
-                            stat_dict[grp]['updated in ldap'].append(host2sync)
+                        post_sync['groups'].update(host_stat_dict)
+        except DhcpawnError as e:
+            self.errors = e.__str__()
+            self.msg = f"Failed sync job"
+            return
 
-        return stat_dict
+        if post_sync['groups']:
+            self.msg = "Sync made some changes"
+            self.result = {'pre sync': {k:v for k,v in self.d['groups'].items() if not v['group is synced']},
+                           'post sync': {k:v for k,v in post_sync.items() if v} }
+        else:
+            self.msg = "Sync did not change anything"
+            self.result = self.d

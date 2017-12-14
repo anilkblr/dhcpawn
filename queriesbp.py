@@ -1,16 +1,15 @@
 # cob: type=blueprint mountpoint=/query
-import os
 import re
 import logbook
 import json
-from ipaddress import IPv4Address, AddressValueError
+from ipaddress import IPv4Address
 
 from flask import Blueprint, request, jsonify, current_app, url_for
 from cob.celery.app import celery_app
 from cob.project import get_project
 
 from . import methodviews as mv
-from .models import Group, Subnet, IP, Pool, CalculatedRange
+from .models import Subnet, IP, CalculatedRange
 from .help_functions import subnet_get_calc_ranges, get_by_id, get_by_field, _get_or_none, err_json
 
 
