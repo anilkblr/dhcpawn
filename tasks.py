@@ -9,8 +9,12 @@ from cob.project import get_project
 from .models import Host, Group, Req, db, Dtask, IP
 from .help_functions import DhcpawnError
 
-sync_every = get_project().config['sync_config']['group_sync_every']
-stat_every = get_project().config['sync_config']['sync_stat_every']
+if get_project().config.get('sync_config'):
+    sync_every = get_project().config['sync_config']['group_sync_every']
+    stat_every = get_project().config['sync_config']['sync_stat_every']
+else:
+    sync_every = 600
+    stat_every = 300
 
 _logger = logbook.Logger(__name__)
 
