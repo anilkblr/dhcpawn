@@ -44,44 +44,66 @@ class LDAPModel(db.Model):
 
     def ldap_add(self):
         if self.deployed:
-
+            exc_type_list = []
             tries = 0
             while True:
-                _logger.debug(f"Add LDAP entry {self.dn()} (tries={tries})")
+                # _logger.debug(f"Add LDAP entry {self.dn()} (tries={tries})")
                 tries += 1
+                if tries > 10:
+                    _logger.error(f"Failed ldap_add on {self.dn()} even after {tries} retries")
+                    raise DhcpawnError(f"Failed ldap_add on {self.dn()} even after {tries} retries")
                 try:
                     current_app.ldap_obj.add_s(self.dn(), modlist.addModlist(self.modlist()))
+                    # logger.debug(f"ldap add {self.dn()} succeeded")
+                    break
                 except ldap.TIMEOUT as e:
                     pass
                 except ldap.SERVER_DOWN as e:
                     pass
+                except ldap.ALREADY_EXISTS as e:
+                    pass
                 except Exception as e:
-                    _logger.error(f'ldap add unexpected exception {e.__str__()} - trying again')
-                    if tries > 10:
-                        _logger.error(f"Failed ldap_add on {self.dn()} even after retries")
-                        raise
-                finally:
-                    _logger.debug(f"ldap add {self.dn()} succeeded")
-                    break
+                    _logger.error(f"ldap add unexpected exception of type {type(e).__name__} ({e.__str__()})")
 
     def ldap_get(self, dn=None, parse=False):
         if not dn:
             dn = self.dn()
 
-        try:
-            res = current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
-            if parse:
-                return parse_ldap_entry(res)
-            else:
-                return res
-
-        except NO_SUCH_OBJECT:
-            _logger.debug("Missing DN is: %s" % dn)
-            return None
-        except Exception as e:
-            _logger.warning("unexcepted exception %s" % e.__str__())
-            return {}
-        _logger.info("Found")
+        exc_type_list = []
+        tries = 0
+        while True:
+            # _logger.debug(f"ldap_get {dn} (try #{tries})")
+            tries += 1
+            if tries > 10:
+                _logger.error(f"ldap_get failed on {self.dn()} even after {tries} retries")
+                _logger.debug(f"list of exceptions: {exc_type_list}")
+                raise DhcpawnError(f"ldap_get failed on {self.dn()} even after {tries} retries")
+            try:
+                res = current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
+                if parse:
+                    # _logger.debug(f"ldap get succeeded after #{tries} tries")
+                    return parse_ldap_entry(res)
+                else:
+                    # _logger.info(f"ldap get succeeded after #{tries} tries")
+                    return res
+            except NO_SUCH_OBJECT:
+                _logger.debug("Missing DN is: %s" % dn)
+                return None
+            except ldap.SERVER_DOWN as e:
+                exc_type_list.append(type(e).__name__)
+                pass
+            except ldap.TIMEOUT as e:
+                exc_type_list.append(type(e).__name__)
+                pass
+            except ldap.LOCAL_ERROR as e:
+                exc_type_list.append(type(e).__name__)
+                pass
+            except ldap.DECODING_ERROR as e:
+                exc_type_list.append(type(e).__name__)
+                pass
+            except Exception as e:
+                exc_type_list.append(type(e).__name__)
+                _logger.error(f"unexcepted exception of type {type(e).__name__} ({e.__str__()}) ")
 
     def ldap_modify(self, dn=None):
         if not dn:
@@ -148,7 +170,6 @@ class Host(LDAPModel):
     mac = db.Column(db.String(100), unique=True)
     group_id = db.Column(db.Integer, db.ForeignKey('group.id'))
     ip = db.relationship('IP', backref='host', uselist=False)
-    # ip_id = db.Column(db.Integer, db.ForeignKey('ip.id'))
     options = db.Column(db.Text)
     deployed = db.Column(db.Boolean, default=True)
 
@@ -195,12 +216,14 @@ class Host(LDAPModel):
         return None
 
     @staticmethod
-    def hostname_mac_coupling_check(hostname, mac):
+    def hostname_mac_coupling_check(**kwargs):
         ''' check that for hostname and mac ,either both are new
         or both exist in DB and are coupled.
         if None returned: just create new host with this mac.
         if host returned: use it to update entry in DB if needed
         else we raise exception'''
+        hostname = kwargs.get('hostname')
+        mac = kwargs.get('mac')
         host_by_hostname = Host.get_by_hostname(hostname)
         host_by_mac = Host.get_by_mac(mac)
         if host_by_hostname and host_by_mac:
@@ -212,19 +235,30 @@ class Host(LDAPModel):
         elif not host_by_hostname and not host_by_mac:
             # no record in DB with this hostname or mac
             return None
-        raise DhcpawnError("hostname/mac coupling check failed. only one of them exist in DB (host_by_hostname: %s, host_by_mac: %s " % (host_by_hostname, host_by_mac))
+        if not kwargs.get('create_duplicate_record'):
+            found_duplication_desc = ''
+            duptype = None
+            if host_by_hostname:
+                found_duplication_desc = f"Existing host in DB with same hostname {hostname}."
+                duptype = 'hostname'
+            if host_by_mac:
+                found_duplication_desc += f" Existing host in DB with mac {mac}. the hostname is {host_by_mac.name}"
+                duptype = 'mac'
+
+            Duplicate(f"Verifying {hostname} and {mac}. Found {found_duplication_desc}", duptype)
+        _logger.error("hostname/mac coupling check failed. only one of them exist in DB (host_by_hostname: %s, host_by_mac: %s " % (host_by_hostname, host_by_mac))
+        raise DhcpawnError("Found duplication")
 
     @staticmethod
-    def host_mac_group_validation(**kwargs):
+    def host_mac_group_validation(*args,**kwargs):
         try:
-            host = Host.hostname_mac_coupling_check(kwargs.get('hostname'), kwargs.get('mac'))
-        except DhcpawnError as e:
-            _logger.debug(e.__str__())
+            host = Host.hostname_mac_coupling_check(**kwargs)
+        except DhcpawnError:
             raise
         try:
             group = Group.validate_by_name(kwargs.get('group'))
         except DhcpawnError as e:
-            _logger.debug(e.__str__())
+            _logger.error(e.__str__())
             raise
         return host, group
 
@@ -268,15 +302,14 @@ class Host(LDAPModel):
         return ip, subnet
 
     @staticmethod
-    def single_input_validate_before_registration(kwargs):
+    def single_input_validate_before_registration(*args,**kwargs):
         ''' validate before registration, get single host creation inputs:
-        hostname, mac, group, subnet, ip, and make sure is a valid request'''
+        hostname, mac, group, subnet, ip, and make sure its a valid request'''
         if any(key not in kwargs for key in ['hostname', 'mac', 'group']):
             raise DhcpawnError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
         try:
-            host, group = Host.host_mac_group_validation(**kwargs)
+            host, group = Host.host_mac_group_validation(*args,**kwargs)
         except DhcpawnError:
-            _logger.warning("Killed ???")
             raise
         else:
             _logger.debug("%s %s" % (host, group))
@@ -285,6 +318,15 @@ class Host(LDAPModel):
             except DhcpawnError:
                 raise
         return host, group, subnet, ip
+
+    @staticmethod
+    def get_by_ip(ipaddr):
+        '''
+        if ip is taken ,return the related host
+        '''
+        ip = IP.query.filter_by(address=IPv4Address(ipaddr)).first()
+        if ip:
+            return Host.query.get(ip.host)
 
     def create(self, **kwargs):
         ''' Host method to create new host '''
@@ -466,7 +508,7 @@ class Group(LDAPModel):
                 info['only in db'].append(h.name)
 
         # content
-        gr_stat = self.get_host_content_diff()
+        gr_stat = self._get_host_content_diff()
         if gr_stat:
             info.setdefault('content',gr_stat)
 
@@ -530,7 +572,7 @@ class Group(LDAPModel):
 
         return stat_dict
 
-    def get_host_content_diff(self):
+    def _get_host_content_diff(self):
         """
         the highest entity with regard to sync importance, changes more then
         the rest. need to verify that for a host in DB we see the same mac, ip, and group in ldap
@@ -547,7 +589,7 @@ class Group(LDAPModel):
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
                 continue
-            hst_stat, elab_diff_lst = self.compare_hst(db_entry, ldap_entry)
+            hst_stat, elab_diff_lst = self._compare_hst(db_entry, ldap_entry)
             if not hst_stat:
                 hosts_diff_list.append({hst.name: {'elaborated diff pairs': elab_diff_lst}})
 
@@ -558,7 +600,7 @@ class Group(LDAPModel):
             _logger.notice("Content diffs found for %s" % self.name)
             return {'diff per host': hosts_diff_list}
 
-    def compare_hst(self, db_entry, ldap_entry):
+    def _compare_hst(self, db_entry, ldap_entry):
         """
         compare LDAP vs. DB entry (ip if exists, mac, name, group name)
         :param db_entry: host config dict
@@ -1098,3 +1140,33 @@ class Dtask(db.Model):
                     description=self.desc,
                     err_str=self.err_str,
                     celery_task_id=self.celery_task_id)
+
+class Duplicate(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    desc = db.Column(db.Text, default='')
+    valid = db.Column(db.Boolean, default=True)
+    duptype = db.Column(db.String(10), default='')
+
+    def __init__(self, description, duptype=None):
+        '''
+        duptype can be one of the strings mac, hostname or ip
+        '''
+        self.desc = description;
+        if duptype and duptype not in ['mac', 'hostname', 'ip']:
+            raise DhcpawnError("Failed creating a duplication record. type should be one of mac,hostname,ip")
+        self.duptype = duptype
+        self._add()
+
+    def config(self):
+        return dict(id=self.id,
+                    description=self.desc,
+                    valid=self.valid,
+                    duplication_type=self.duptype)
+
+    def invalidate(self):
+        self.valid = False
+        self._add()
+
+    def _add(self):
+        db.session.add(self)
+        db.session.commit()

@@ -1,5 +1,0 @@
----
-# tasks file for dhcpawn
-
-- include: install_ldap.yml
-- include: configure_ldap.yml
