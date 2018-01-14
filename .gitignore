@@ -1,4 +1,5 @@
 /.cob
+migrations/
 dhcpawn.ipynb
 *.pyc
 dhcpawn.log
