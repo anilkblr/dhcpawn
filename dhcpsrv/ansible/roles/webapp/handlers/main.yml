@@ -1,2 +1,0 @@
-- name: reload nginx config
-  shell: nginx -s reload

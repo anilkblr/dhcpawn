@@ -11,7 +11,7 @@ from werkzeug.exceptions import BadRequest
 from celery import group
 from cob import db
 
-from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask
+from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
 from .help_functions import err_json, _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco, subnet_get_calc_ranges
 from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify
 
@@ -127,7 +127,7 @@ class HostListAPI(DhcpawnMethodView):
         """ create new host entry in database and ldap"""
         self.data = request.get_json(force=True)
         try:
-            host, group, subnet, ip = Host.single_input_validate_before_registration(self.data)
+            host, group, subnet, ip = Host.single_input_validate_before_registration(create_duplicate_record=False,**self.data)
         except DhcpawnError as e:
             self.errors = e.__str__()
             self.msg = "Failed host registration"
@@ -838,7 +838,17 @@ class PoolAPI(MethodView):
         db.session.commit()
         return jsonify([pool.config() for pool in Pool.query.all()])
 
+# Duplicate Class
+class DuplicateListAPI(MethodView):
 
+    def get(self):
+        return jsonify([duplicate.config() for duplicate in Duplicate.query.all()])
+
+    def delete(self):
+        pass
+
+    def put(self):
+        pass
 ###### Help functions
 
 def identify_param(model, param, patterns):
@@ -881,10 +891,7 @@ class MultipleAction(DhcpawnMethodView):
             except DhcpawnError as e:
                 self.errors = e.__str__()
                 return
-            except Exception as e:
-                self.errors = e.__str__()
-                self.msg = "Encountered an unexpected exception"
-                return
+
             # if we got here , all entries got their ips and we can commit to DB and
             # add to LDAP
             remove_hosts_on_fail = []
@@ -895,34 +902,19 @@ class MultipleAction(DhcpawnMethodView):
                     db.session.add(validated_host_dict[su][hst])
                     remove_hosts_on_fail.append(validated_host_dict[su][hst])
                     try:
-                        _logger.debug("Commiting host %s to DB" % validated_host_dict[su][hst].name)
+                        _logger.warning("Commiting host %s to DB" % validated_host_dict[su][hst].name)
                         db.session.commit()
-                    except Exception as e:
+                    except DhcpawnError as e:
                         _logger.error(e.__str__())
                         db.session.rollback()
-                        # clear_ips(remove_ips_on_fail)
-                        # clear_hosts(remove_hosts_on_fail)
-                        self.errors = e.__str__()
-                        self.msg = "Aborted request"
-                        # raise DhcpawnError(e.__str__())
-                    except Exception as e:
-                        _logger.error("Unexpected exception %s" % e.__str__())
-                        self.errors = e.args[0]
-                        return
-                        # TODO: unexpected exception and i continue ????? WTF
+                        continue
                     try:
-                        # validated_host_dict[su][hst].ldap_add()
                         dtasks_group.append(Dtask(self.drequest.id))
                         tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id,
                                                                 dtasks_group[-1].id))
-                        # try:
-                        #     validated_host_dict[su][hst].ldap_add()
-                        # except Exception as e:
-                        #     import pudb;pudb.set_trace()
                     except ALREADY_EXISTS as e:
                         self.errors = e.__str__()
                         self.msg = "Aborting Request: a host with these params already exists in LDAP (%s)" % validated_host_dict[su][hst].config()
-                        # db.session.rollback()
                         clear_ips(remove_ips_on_fail)
                         clear_hosts(remove_hosts_on_fail)
                         return
@@ -955,8 +947,6 @@ class MultipleAction(DhcpawnMethodView):
         else:
             _logger.info("Registring entries only in DB ,no LDAP update")
             # quick registration mode - simply writing all records to DB.
-            # DB-ldap sync will happen later
-            # validated_host_dict, _ = register_in_db_no_validation(data)
             try:
                 validated_host_dict, _ = validate_data_before_registration(self.data)
             except DhcpawnError as e:
@@ -970,11 +960,12 @@ class MultipleAction(DhcpawnMethodView):
                         db.session.add(validated_host_dict[su][hst])
                         try:
                             db.session.commit()
-                            # _logger.info("Finished quick db registration")
-                        except Exception as e:
-                            _logger.error("Quick mode - got an unexpected error, please check yml syntax and db duplications")
-                            self.errors = "Failed quick db registration mode"
-
+                        except IntegrityError as e:
+                            if re.search("duplicate", e.__str__()):
+                                db.session.rollback()
+                                dup_description = re.search('Key \((.*)\).*already exists', e.__str__()).group(0)
+                                Duplicate(dup_description)
+                                _logger.error(f"DUPLICATION ERROR: {dup_description}")
 
     @gen_resp_deco
     @update_req
@@ -1101,7 +1092,7 @@ def validate_data_before_registration(data):
         try:
 
             # host, group, subnet, ip = single_input_validation(hdata)
-            host, group, subnet, ip = Host.single_input_validate_before_registration(hdata)
+            host, group, subnet, ip = Host.single_input_validate_before_registration(**hdata)
             new_host = False
             if not host:
                 new_host = True
@@ -1130,10 +1121,14 @@ def validate_data_before_registration(data):
             if subnet not in validated_host_dict:
                 validated_host_dict[subnet] = dict()
             validated_host_dict[subnet][h] = host
-        except DhcpawnError:
-            # clear_ips(remove_ips_on_fail)
-            # clear_hosts(remove_hosts_on_fail)
-            raise
+        except DhcpawnError as e:
+            if re.search("ip .* already taken", e.__str__()):
+                ip_record = IP.query.filter_by(address=IPv4Address(hdata['ip'])).first()
+                dup_description = re.search("ip .* already taken", e.__str__()).group(0)
+                Duplicate(f"{dup_description} (new host:{hdata['hostname']} existing host: {ip_record.host.name})", "ip")
+                _logger.error(f"DUPLICATION ERROR: {dup_description}")
+            else:
+                raise
     return validated_host_dict, remove_ips_on_fail
 
 def validate_data_before_deletion(data):

@@ -15,6 +15,8 @@ _logger = logbook.Logger(__name__)
 api = Blueprint('rest', __name__)
 
 
+api.add_url_rule('/duplicates/', view_func=mv.DuplicateListAPI.as_view('dhcpawn_duplicate_list_api'), methods=['GET'])
+
 api.add_url_rule('/requests/', view_func=mv.DRequestListAPI.as_view('dhcpawn_request_list_api'), methods=['GET'])
 api.add_url_rule('/requests/<param>', view_func=mv.DRequestAPI.as_view('dhcpawn_request_api'), methods=['GET'])
 

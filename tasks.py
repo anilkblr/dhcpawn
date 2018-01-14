@@ -22,35 +22,34 @@ _logger = logbook.Logger(__name__)
 def task_get_sync_stat():
     # get sync stat for all groups
     stat = dict()
-    try:
-        for gr in Group.query.all():
+    for gr in Group.query.all():
+        try:
             stat.update(gr.get_sync_stat())
-    except DhcpawnError as e:
-        _logger.error(e.__str__())
-        raise
-    else:
-        return stat
+        except DhcpawnError as e:
+            pass
+
+    return stat
 
 @task(every=sync_every, use_app_context=True)
 def task_sync():
     # run sync on all groups
     stat = dict()
     post_sync = dict([('groups', {})])
-    try:
-        for gr in Group.query.all():
-            tmpd, host_stat_dict = gr.group_sync()
-            stat.update(tmpd)
-            if host_stat_dict:
-                post_sync['groups'].update(host_stat_dict)
-    except DhcpawnError as e:
-        _logger.error(e.__str__())
-        raise
-    else:
-        if post_sync['groups']:
+
+    for gr in Group.query.all():
+        try:
+           tmpd, host_stat_dict = gr.group_sync()
+           stat.update(tmpd)
+           if host_stat_dict:
+               post_sync['groups'].update(host_stat_dict)
+        except DhcpawnError as e:
+            pass
+
+    if post_sync['groups']:
             return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
                     'post sync': {k:v for k,v in post_sync.items() if v} }
-        else:
-            return stat
+    else:
+        return stat
 
 @task(bind=True)
 def task_get_group_sync_stat(self, group_name, dtask_id):
@@ -125,9 +124,7 @@ def task_host_ldap_modify(self,hid, dtask_id, **kwargs):
                 host.ip = IP.query.get(kwargs.get('new_address_id'))
             _logger.info("deleteing old ip %s" % prev_ip.address)
             db.session.delete(prev_ip)
-        _logger.info("3.2")
         db.session.add(host)
-        _logger.info("3.3")
         try:
             _logger.info("inside modify task 4")
             host.ldap_add()
