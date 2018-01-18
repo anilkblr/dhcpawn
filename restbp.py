@@ -1,14 +1,15 @@
 # cob: type=blueprint mountpoint=/rest
 import logbook
+import json
 
 from ipaddress import IPv4Address, AddressValueError
 from werkzeug.exceptions import NotFound
 from flask import Blueprint, jsonify, abort, request
 from cob import db
 
-from .models import Host, Subnet, IP, Dtask
+from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange
 from . import methodviews as mv
-from .help_functions import get_by_id, get_by_field
+from .help_functions import get_by_id, get_by_field, extract_skeleton
 
 _logger = logbook.Logger(__name__)
 
@@ -16,6 +17,8 @@ api = Blueprint('rest', __name__)
 
 
 api.add_url_rule('/duplicates/', view_func=mv.DuplicateListAPI.as_view('dhcpawn_duplicate_list_api'), methods=['GET'])
+api.add_url_rule('/duplicates/<param>', view_func=mv.DuplicateAPI.as_view('dhcpawn_duplicate_api'), methods=['GET','POST','DELETE'])
+
 
 api.add_url_rule('/requests/', view_func=mv.DRequestListAPI.as_view('dhcpawn_request_list_api'), methods=['GET'])
 api.add_url_rule('/requests/<param>', view_func=mv.DRequestAPI.as_view('dhcpawn_request_api'), methods=['GET'])
@@ -134,3 +137,84 @@ def delete_ip():
     db.session.commit()
 
     return jsonify("IP %s removed and host %s was updated" % (ip_string, host.name))
+
+@api.route('/deploy/', methods=['POST'])
+def deploy_server():
+    '''
+    deployment consists two steps:
+    1. LDAP skeleton (groups, subnets ...) + calcranges..
+    2. The hosts info for each group
+    '''
+    # deploy skeleton
+    skeleton = extract_skeleton()
+    deploy_groups(skeleton)
+    deploy_subnets(skeleton)
+    deploy_pools(skeleton)
+    deploy_calcranges(skeleton)
+    deploy_dhcpranges(skeleton)
+
+    # deploy hosts info per group
+    for gr in Group.query.all():
+        gr.deploy()
+
+    return ("Finished Deployment Stage")
+
+@api.route('/get_sync_stat/')
+def gss():
+    groups = {}
+    for g in Group.query.all():
+        groups.update(g.get_sync_stat())
+
+    return jsonify(groups)
+
+###
+def deploy_groups(skeleton):
+    _logger.info("Deploying Groups to DB")
+    for gr in skeleton['groups']:
+        group = Group(name=gr, options=json.dumps({}), deployed=True)
+        db.session.add(group)
+    db.session.commit()
+
+def deploy_subnets(skeleton):
+    _logger.info("Deploying Subnets to DB")
+    for sb in skeleton['subnets']:
+        subnet = Subnet(name=sb,
+                        netmask=skeleton['subnets'][sb].get('netmask'),
+                        options=json.dumps(skeleton['subnets'][sb].get('options',{})),
+                        deployed=True)
+        db.session.add(subnet)
+    db.session.commit()
+
+def deploy_pools(skeleton):
+    _logger.info("Deploying Pools to DB")
+    for pl in skeleton['pools']:
+        pool = Pool(name=pl,
+                    subnet_id=Subnet.query.filter_by(name=skeleton['pools'][pl].get('subnet_name')).first().id,
+                                                     options=json.dumps(skeleton['pools'][pl].get('options', {})),
+                                                     deployed=True)
+        db.session.add(pool)
+    db.session.commit()
+
+def deploy_calcranges(skeleton):
+    _logger.info("Deploying Calcranges to DB")
+    for sb in skeleton['calcranges']:
+        for cr in skeleton['calcranges'][sb]:
+            calcrange = CalculatedRange(
+                min=cr.get('min'),
+                max=cr.get('max'),
+                subnet_id=Subnet.query.filter_by(name=sb).first().id
+            )
+            db.session.add(calcrange)
+    db.session.commit()
+
+def deploy_dhcpranges(skeleton):
+    _logger.info("Deploying Dhcpranges to DB")
+    for pl in skeleton['dhcpranges']:
+        dhcprange = DhcpRange(
+            min=skeleton['dhcpranges'][pl].get('min'),
+            max=skeleton['dhcpranges'][pl].get('max'),
+            pool_id=Pool.query.filter_by(name=pl).first().id,
+            deployed=True
+            )
+        db.session.add(dhcprange)
+    db.session.commit()

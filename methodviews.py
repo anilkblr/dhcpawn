@@ -22,17 +22,9 @@ patterns = {
     'id': ['^\d+$'],
     'mac': ['^([0-9a-fA-F][0-9a-fA-F]:){5}([0-9a-fA-F][0-9a-fA-F])$'],
     'name': ['^\D+[\da-zA-Z_\-]*$', '^\d[\d\.]+$'],
-    'address': ['^\d[\d\.]+$']
+    'address': ['^\d[\d\.]+$'],
+    'duptype': ['mac|ip']
     }
-def value_by_context(returned):
-    """
-    check if request context exists to return jsonified
-    """
-    if has_request_context():
-        return jsonify(returned)
-    else:
-        return returned
-
 
 class DhcpawnMethodView(MethodView):
     ''' Used to initiate a dhcpawn Request object '''
@@ -63,7 +55,7 @@ class DRequestBaseAPI(DhcpawnMethodView):
         if req:
             return req
         else:
-            raise DhcpawnError('Bad param or no dhcpawn request with param %s' % param)
+            raise DhcpawnError(f"Wrong parameter {param} or no dhcpawn request with this parameter")
 
 class DRequestAPI(DRequestBaseAPI):
 
@@ -839,16 +831,59 @@ class PoolAPI(MethodView):
         return jsonify([pool.config() for pool in Pool.query.all()])
 
 # Duplicate Class
-class DuplicateListAPI(MethodView):
+class DuplicateBaseAPI(DhcpawnMethodView):
+    def get_duplicate_by_param(self, param):
+        self.patterns = {k: patterns[k] for k in ('duptype','id')}
+        dup = identify_param(Duplicate, param, self.patterns)
+        if isinstance(dup, list):
+            self.result = [d.config() for d in dup]
+        elif isinstance(dup, Duplicate):
+            self.result = dup.config()
+        else:
+            self.errors = f"Wrong parameter {param} or no dhcpawn request with this parameter"
+            self.msg = f"Please make sure this duplicate type exists. to see all duplicates please use this url: {url_for('rest.dhcpawn_duplicate_list_api', _external=True)}"
+            raise DhcpawnError(self.errors)
+
+class DuplicateAPI(DuplicateBaseAPI):
+
+    @gen_resp_deco
+    def get(self, param):
+        try:
+            dups = self.get_duplicate_by_param(param)
+        except DhcpawnError:
+            return
+        self.msg = f"Get info about ldap duplicates with parameter {param}"
+
+    @gen_resp_deco
+    def post(self, param):
+        ''' used to make a duplicate record valid again.
+        param can only be an id nubmer '''
+        try:
+            dup = self.get_duplicate_by_param(param)
+        except DhcpawnError:
+            return
+        dup.make_valid()
+        self.msg = "Duplicate record is now valid"
+
+    @gen_resp_deco
+    def put(self, param):
+        ''' param can only be an id nubmer
+        used to invalidate a duplicate record'''
+        try:
+            dup = self.get_duplicate_by_param(param)
+        except DhcpawnError:
+            return
+
+        dup.invalidate()
+        self.msg = "Invalidated Duplicate record"
+
+
+class DuplicateListAPI(DhcpawnMethodView):
 
     def get(self):
-        return jsonify([duplicate.config() for duplicate in Duplicate.query.all()])
+        return jsonify([duplicate.config() if duplicate.valid
+                        else None for duplicate in Duplicate.query.all()])
 
-    def delete(self):
-        pass
-
-    def put(self):
-        pass
 ###### Help functions
 
 def identify_param(model, param, patterns):
@@ -902,7 +937,7 @@ class MultipleAction(DhcpawnMethodView):
                     db.session.add(validated_host_dict[su][hst])
                     remove_hosts_on_fail.append(validated_host_dict[su][hst])
                     try:
-                        _logger.warning("Commiting host %s to DB" % validated_host_dict[su][hst].name)
+                        _logger.debug("Commiting host %s to DB" % validated_host_dict[su][hst].name)
                         db.session.commit()
                     except DhcpawnError as e:
                         _logger.error(e.__str__())
