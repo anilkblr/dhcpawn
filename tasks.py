@@ -2,7 +2,7 @@
 import json
 import logbook
 import ldap
-
+import os
 # from celery.contrib import rdb
 from cob import task, db
 from cob.project import get_project
@@ -12,13 +12,15 @@ from .help_functions import DhcpawnError
 if get_project().config.get('sync_config'):
     sync_every = get_project().config['sync_config']['group_sync_every']
     stat_every = get_project().config['sync_config']['sync_stat_every']
+    sync_delete_ldap_entries = get_project().config['sync_config'].get('sync_delete_ldap_entries', os.getenv('DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
 else:
     sync_every = 600
     stat_every = 300
+    sync_delete_ldap_entries = False
 
 _logger = logbook.Logger(__name__)
 
-@task(every=stat_every, use_app_context=True)
+# @task(every=stat_every, use_app_context=True)
 def task_get_sync_stat():
     # get sync stat for all groups
     stat = dict()
@@ -30,7 +32,7 @@ def task_get_sync_stat():
 
     return stat
 
-@task(every=sync_every, use_app_context=True)
+# @task(every=sync_every, use_app_context=True)
 def task_sync():
     # run sync on all groups
     stat = dict()
@@ -38,10 +40,10 @@ def task_sync():
 
     for gr in Group.query.all():
         try:
-           tmpd, host_stat_dict = gr.group_sync()
-           stat.update(tmpd)
-           if host_stat_dict:
-               post_sync['groups'].update(host_stat_dict)
+            tmpd, host_stat_dict = gr.group_sync(sync_delete_ldap_entries=sync_delete_ldap_entries)
+            stat.update(tmpd)
+            if host_stat_dict:
+                post_sync['groups'].update(host_stat_dict)
         except DhcpawnError as e:
             pass
 

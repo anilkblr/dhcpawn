@@ -12,6 +12,9 @@ env:
 
 sudo: false
 
+before_install:
+  - pip install -U pip setuptools
+
 install:
   - pip install cob
   - cob bootstrap

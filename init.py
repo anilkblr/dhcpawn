@@ -43,7 +43,7 @@ def prepare_db():
         ("migraterev", ["cob", "migrate", "revision", "-m", "\"init db\""]),
         ("insert_missing_import", ""),
         ("migrateup", ["cob", "migrate", "up"]),
-        ("get_skeleton", ["p", "dhcpldap", "-u", "admin", "-p", pw, "get_skeleton", "--lab", "Infi1"]),
+        ("get_skeleton", ["p", "dhcpldap", "-u", "admin", "-p", pw, "get_skeleton", "--lab", "Infi1", "--deployed"]),
         ("runtestserver", ["cob", "testserver", "-p", "5454"]),
         ("wait 5 seconds", ["sleep", "5"]),
         ("populate_skeleton", ["p", "dhcpawn", "populate", "--filename", "skeleton.yml", "--port", "5454"]),
@@ -51,6 +51,8 @@ def prepare_db():
     for cmd, r_gs in commands:
 
         print(f"running {cmd}")
+        if cmd == "get_skeleton" or cmd == "populate_skeleton" or cmd == "runtestserver":
+            continue
         if cmd == "insert_missing_import":
             insert_missing_import()
             continue
