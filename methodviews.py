@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from ldap import ALREADY_EXISTS
 from werkzeug.exceptions import BadRequest
 from celery import group
+from celery.exceptions import CeleryError
 from cob import db
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
@@ -943,21 +944,9 @@ class MultipleAction(DhcpawnMethodView):
                         _logger.error(e.__str__())
                         db.session.rollback()
                         continue
-                    try:
-                        dtasks_group.append(Dtask(self.drequest.id))
-                        tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id,
+                    dtasks_group.append(Dtask(self.drequest.id))
+                    tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id,
                                                                 dtasks_group[-1].id))
-                    except ALREADY_EXISTS as e:
-                        self.errors = e.__str__()
-                        self.msg = "Aborting Request: a host with these params already exists in LDAP (%s)" % validated_host_dict[su][hst].config()
-                        clear_ips(remove_ips_on_fail)
-                        clear_hosts(remove_hosts_on_fail)
-                        return
-                    except Exception as e:
-                        self.errors = e.__str__()
-                        clear_ips(remove_ips_on_fail)
-                        clear_hosts(remove_hosts_on_fail)
-                        return
 
                     if isinstance(self.result, dict):
                         self.result.update({hst:validated_host_dict[su][hst].config()})
@@ -966,17 +955,15 @@ class MultipleAction(DhcpawnMethodView):
                         _logger.debug("updating drequest result")
 
             # send all ldap actions to celery
-            # tasks_group.append(task_check_drequest_status.s(self.drequest.id))
             job = group(tasks_group)
             try:
                 self.res = job.apply_async()
                 self.msg = "Registration to DB Finished. ldap async part is running. stay tuned.."
-            except Exception as e:
+            except CeleryError as e:
                 self.errors = e.__str__()
                 self.msg = "Registration failed ,please check the errors part"
                 clear_ips(remove_ips_on_fail)
                 clear_hosts(remove_hosts_on_fail)
-                # clear_hosts(validated_host_dict[su][hst])
                 return
 
         else:
@@ -1035,10 +1022,6 @@ class MultipleAction(DhcpawnMethodView):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        except Exception as e:
-            self.errors = e.__str__()
-            self.msg = "Encountered an unexpected exception"
-            return
 
         tasks_group = []
         dtasks_group = []
@@ -1055,7 +1038,7 @@ class MultipleAction(DhcpawnMethodView):
         try:
             self.res = job.apply_async()
             self.msg = 'Async deletion is running. stay tuned..'
-        except Exception as e:
+        except CeleryError as e:
             self.errors = e.__str__()
             self.msg = "Deletion failed ,please check the errors part"
 
@@ -1073,7 +1056,7 @@ def hard_delete(data):
         _hard_delete_by_name(name, group)
         # _hard_delete_by_mac(mac)
 
-def _hard_delete_by_name(name,  group):
+def _hard_delete_by_name(name, group):
     try:
         host = Host.query.filter_by(name=name).first()
         # _logger.debug("LDAP hard delete by name %s" % host.config())
@@ -1090,7 +1073,7 @@ def _hard_delete_by_name(name,  group):
             _logger.info("LDAP hard delete %s" % host.dn())
             db.session.delete(host)
             db.session.commit()
-        except Exception as e:
+        except DhcpawnError as e:
             _logger.warning("Failed hard delete for %s (%s)" % (name, e.__str__()))
             try:
                 db.session.rollback()
@@ -1229,7 +1212,7 @@ def clear_hosts(hosts):
         try:
             try:
                 host.ldap_delete()
-            except Exception as e:
+            except DhcpawnError as e:
                 _logger.warning("Failed while cleaning LDAP after failure %s (%s)" % (host.name, e.__str__()))
                 pass
             db.session.delete(host)
@@ -1238,7 +1221,6 @@ def clear_hosts(hosts):
         except SQLAlchemyError as e:
             _logger.error("Failed while cleaning %s after failure (%s)" % (name, e.__str__()))
             pass
-            # raise DhcpawnError(e.__str__())
         _logger.info("Cleaned all remainders of %s from LDAP/DB" % name)
 
     _logger.info("Finished removing hosts from DB after fail")

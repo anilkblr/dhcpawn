@@ -6,9 +6,11 @@ import ldap
 from time import sleep
 
 from flask import current_app
-from ldap import modlist, SCOPE_BASE, NO_SUCH_OBJECT, SCOPE_SUBTREE
+from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, \
+    SERVER_DOWN, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT
 from ipaddress import IPv4Address, IPv4Network
 from sqlalchemy_utils import IPAddressType
+from sqlalchemy.exc import IntegrityError
 from cob import db
 
 from .ldap_utils import server_dn
@@ -43,7 +45,7 @@ class LDAPModel(db.Model):
     def modlist(self):
         return dict()
 
-    def ldap_retry(self, cmd_type=None, dn=None):
+    def ldap_retry(self, cmd_type=None, dn=None, parse=None):
         '''
         ldap retry code + exceptions handling
         cmd_type param: add, delete, get
@@ -65,10 +67,10 @@ class LDAPModel(db.Model):
 
         if not dn:
             dn = self.dn()
-
         if self.deployed:
             exc_type_list = []
             tries = 0
+            e = None
             while True:
                 tries += 1
                 if tries > 10:
@@ -76,101 +78,35 @@ class LDAPModel(db.Model):
                     raise DhcpawnError(errmsg)
                 try:
                     if ldapcmd_args:
-                        ldapcmd(dn, ldapcmd_args)
-                    else:
-                        ldapcmd(dn)
-
-                    break
-                except ldap.TIMEOUT as e:
+                        res = ldapcmd(dn, ldapcmd_args)
+                        if cmd_type == 'get':
+                            if parse:
+                                return parse_ldap_entry(res)
+                            else:
+                                return res
+                        else:
+                            ldapcmd(dn)
+                        break
+                except (TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT)  as e:
+                    _logger.debug(e.__str__())
                     exc_type_list.append(type(e).__name__)
                     pass
                 except ldap.SERVER_DOWN as e:
+                    _logger.debug(e.__str__())
                     exc_type_list.append(type(e).__name__)
                     sleep(1)
-                    pass
-                except ldap.ALREADY_EXISTS as e:
-                    exc_type_list.append(type(e).__name__)
-                    pass
-                except ldap.LOCAL_ERROR as e:
-                    exc_type_list.append(type(e).__name__)
-                    pass
-                except ldap.DECODING_ERROR as e:
-                    exc_type_list.append(type(e).__name__)
                     pass
 
     def ldap_add(self):
         raise RuntimeError("prevent ldap_add from running")
         self.ldap_retry(cmd_type='add', dn=self.dn())
-        # if self.deployed:
-        #     exc_type_list = []
-        #     tries = 0
-        #     while True:
-        #         # _logger.debug(f"Add LDAP entry {self.dn()} (tries={tries})")
-        #         tries += 1
-        #         if tries > 10:
-        #             _logger.error(f"Failed ldap_add on {self.dn()} even after {tries} retries {exc_type_list}")
-        #             raise DhcpawnError(f"Failed ldap_add on {self.dn()} even after {tries} retries {exc_type_list}")
-        #         try:
-        #             current_app.ldap_obj.add_s(self.dn(), modlist.addModlist(self.modlist()))
-        #             # logger.debug(f"ldap add {self.dn()} succeeded")
-        #             break
-        #         except ldap.TIMEOUT as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             pass
-        #         except ldap.SERVER_DOWN as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             sleep(1)
-        #             pass
-        #         except ldap.ALREADY_EXISTS as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             pass
-        #         except ldap.LOCAL_ERROR as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             pass
-        #         except ldap.DECODING_ERROR as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             pass
-        #         except Exception as e:
-        #             exc_type_list.append(type(e).__name__)
-        #             _logger.error(f"ldap add unexpected exception of type {type(e).__name__} ({e.__str__()})")
 
     def ldap_get(self, dn=None, parse=False):
-        if not dn:
-            dn = self.dn()
+        return self.ldap_retry(cmd_type='get', dn=dn, parse=parse)
 
-        exc_type_list = []
-        tries = 0
-        while True:
-            # _logger.debug(f"ldap_get {dn} (try #{tries})")
-            tries += 1
-            if tries > 10:
-                _logger.error(f"ldap_get failed on {self.dn()} even after {tries} retries {exc_type_list}")
-                _logger.debug(f"list of exceptions: {exc_type_list}")
-                raise DhcpawnError(f"ldap_get failed on {self.dn()} even after {tries} retries {exc_type_list}")
-            try:
-                res = current_app.ldap_obj.search_s(dn, SCOPE_SUBTREE)
-                if parse:
-                    return parse_ldap_entry(res)
-                else:
-                    return res
-            except NO_SUCH_OBJECT:
-                _logger.debug("Missing DN is: %s" % dn)
-                return None
-            except ldap.SERVER_DOWN as e:
-                exc_type_list.append(type(e).__name__)
-                pass
-            except ldap.TIMEOUT as e:
-                exc_type_list.append(type(e).__name__)
-                pass
-            except ldap.LOCAL_ERROR as e:
-                exc_type_list.append(type(e).__name__)
-                pass
-            except ldap.DECODING_ERROR as e:
-                exc_type_list.append(type(e).__name__)
-                pass
-            except Exception as e:
-                exc_type_list.append(type(e).__name__)
-                _logger.error(f"unexcepted exception of type {type(e).__name__} ({e.__str__()}) ")
+    def ldap_delete(self, dn=None):
+        raise RuntimeError("prevent ldap_delete from running")
+        self.ldap_retry(cmd_type='delete', dn=dn)
 
     def ldap_modify(self, dn=None):
         raise RuntimeError("prevent ldap_modify from running")
@@ -189,27 +125,6 @@ class LDAPModel(db.Model):
             except NO_SUCH_OBJECT:
                 self.ldap_add()
 
-    def ldap_delete(self, dn=None):
-        raise RuntimeError("prevent ldap_delete from running")
-        self.ldap_retry(cmd_type='delete', dn=dn)
-        # if not dn:
-        #     dn = self.dn()
-
-        # if self.deployed:
-        #     tries = 0
-        #     while True:
-        #         _logger.debug(f"Delete LDAP entry {self.dn()} (tries={tries})")
-        #         tries += 1
-        #         try:
-        #             current_app.ldap_obj.delete_s(dn)
-        #         except Exception as e:
-        #             _logger.error(f'ldap delete unexpected exception {e.__str__()} - trying again')
-        #             if tries > 10:
-        #                 _logger.error(f"Failed ldap_delete on {self.dn()} even after retries")
-        #                 raise
-        #         finally:
-        #             _logger.debug(f"ldap delete {self.dn()} succeeded")
-        #             break
 
     @classmethod
     def validate_by_name(cls, name):
@@ -579,7 +494,7 @@ class Group(LDAPModel):
         ('cn=m-ibox612-ups3,cn=Infinilab-Systems,cn=DHCP Config,dc=dhcpawn,dc=net', {'objectClass': [b'dhcpHost', b'top'], 'dhcpHWAddress':
         [b'ethernet 00:20:85:ed:e2:e1'], 'cn': [b'm-ibox612-ups3'], 'dhcpStatements': [b'fixed-address 172.16.74.123']})
         '''
-
+        _logger.info(f"deploying group {self.name}")
         ldap_records = self.ldap_get()[1:]
         _logger.info(f"Deploying {len(ldap_records)} hosts for {self.name}")
         for record in ldap_records:
@@ -612,8 +527,7 @@ class Group(LDAPModel):
         :return: group dict with amount, "only in ldap", "only in db" and content diffs
         """
 
-        _logger.debug("Inside get_sync_status")
-        _logger.debug(f"Group name {self.name}")
+        _logger.debug("Inside get_sync_status for group {self.name}")
 
         gr_diff = {self.name: {'group is synced':True, 'info':{}}}
         info = gr_diff[self.name]['info']
@@ -640,8 +554,10 @@ class Group(LDAPModel):
 
         # only in db
         for h in db_records:
-            if not h.ldap_get():
-                _logger.debug("Entry exists only in DB %s" % h.name)
+            try:
+                h.ldap_get()
+            except DhcpawnError:
+                _logger.debug(f"Entry exists only in DB {h.name}")
                 info.setdefault('only in db', [])
                 info['only in db'].append(h.name)
 
@@ -724,7 +640,10 @@ class Group(LDAPModel):
         for hst in Host.query.filter_by(group=self):
 
             db_entry = hst.config()
-            ldap_entry = hst.ldap_get(parse=True)
+            try:
+                ldap_entry = hst.ldap_get(parse=True)
+            except DhcpawnError:
+                continue
 
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
@@ -919,16 +838,11 @@ class IP(db.Model):
     def is_ip_taken(addr):
         ''' returns the IPv4address(addr) is its available. otherwise ,will raise Dhcpawnerror
         with an explanatory msg'''
-
-        try:
-            res = IP.query.filter_by(address=addr).first()
-        except Exception as e:
-            raise DhcpawnError('something went wrong while looking for %s in DB (%s)' % (addr, e.__str__()))
+        res = IP.query.filter_by(address=addr).first()
+        if res:
+            raise DhcpawnError(f"ip {addr} already taken by {res.host.name}")
         else:
-            if res:
-                raise DhcpawnError(f"ip {addr} already taken by {res.host.name}")
-            else:
-                return IPv4Address(addr)
+            return IPv4Address(addr)
 
     @staticmethod
     def allocate_specific_ip(addr):
@@ -941,22 +855,17 @@ class IP(db.Model):
             raise DhcpawnError("provided ip is empty")
         try:
             IP.is_ip_taken(addr)
-            # get_by_field_or_404(IP, 'address', IPv4Address(addr))
         except DhcpawnError as e:
             raise
         else:
-            # if "does not exist" in e.__str__():
             cr = IP.get_calcrange(addr)
             if cr:
                 ip = IP(address=IPv4Address(addr),
                     calcrange_id=cr.id)
                 db.session.add(ip)
-                try:
-                    db.session.commit()
-                except Exception as e:
-                   raise DhcpawnError(e.__str__())
-                else:
-                    return ip
+                db.session.commit()
+                return ip
+
             else:
                 raise DhcpawnError('No calculated range for %s' % addr)
 
@@ -1091,7 +1000,7 @@ class CalculatedRange(db.Model):
                 fip = IP(address=top, calcrange_id=self.id)
                 try:
                     db.session.add(fip)
-                except Exception as e:
+                except IntegrityError as e:
                     db.session.rollback()
                     raise DhcpawnError(e.__str__())
                 else:
@@ -1186,12 +1095,6 @@ class Req(db.Model):
         self.clean_on_failure()
         self.postreply()
 
-        # if not failed and not running:
-        #     # if we got here all tasks succeeded
-        #     self.status = 'Done'
-        #     self.commit()
-        #     self.postreply()
-        # elif :
     def clean_on_failure(self):
         '''for cases where the drequest failed ,at least one of the hosts didn't
         register properly, this method will clear all other hosts data from DB/LDAP'''
@@ -1204,21 +1107,14 @@ class Req(db.Model):
             _logger.info(f"will try to delete {hosts[h]} from LDAP")
 
             h_inst = Host.query.filter_by(name=hosts[h]['hostname']).first()
-            try:
-                _logger.info(f"deleting {h_inst.id} from LDAP")
-                h_inst.ldap_delete()
-            except Exception as e:
-                _logger.warning("failed cleaning %s data from LDAP after failure (%s) " % (h_inst.name, e.__str__()))
-                pass
+            _logger.info(f"deleting {h_inst.id} from LDAP")
+            h_inst.ldap_delete()
 
-            try:
-                if h_inst.ip:
-                    db.session.delete(h_inst.ip)
-                db.session.delete(h_inst)
-                db.session.commit()
-            except:
-                _logger.warning(f"failed cleaning {h_inst.name} data from DB after failure {e.__str__()}")
-                pass
+            if h_inst.ip:
+                db.session.delete(h_inst.ip)
+            db.session.delete(h_inst)
+            db.session.commit()
+
 
 
 
@@ -1306,7 +1202,7 @@ class Duplicate(db.Model):
         if duptype and duptype not in ['mac', 'hostname', 'ip']:
             raise DhcpawnError("Failed creating a duplication record. type should be one of mac,hostname,ip")
         self.duptype = duptype
-        self._add()
+        self._update()
 
     def config(self):
         return dict(id=self.id,
