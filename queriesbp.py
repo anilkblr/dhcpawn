@@ -46,7 +46,7 @@ def general_info():
     broker_connection = re.match('.* (amqp://.*//) at', celery_app.broker_connection().__str__())[1]
     info = {
         'LDAP': {
-            'LDAP_PRODUCTION_SERVER': config['LDAP_PRODUCTION_SERVER'],
+            'LDAP_PRODUCTION_SERVER': config['PRODUCTION_LDAP'],
             'LDAP_SERVER': config['LDAP_SERVER'],
             'BIND_DN': config['BIND_DN']
             },
