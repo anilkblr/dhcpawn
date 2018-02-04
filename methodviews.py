@@ -359,7 +359,6 @@ class GroupAPI(GroupBaseAPI):
             host.ldap_add()
 
         self.result = [{group.name:group.config()} for group in Group.query.all()]
-        # return jsonify(dict(items=[group.config() for group in Group.query.all()]))
 
 # Subnet CLASSES
 class SubnetListAPI(DhcpawnMethodView):
@@ -388,8 +387,7 @@ class SubnetListAPI(DhcpawnMethodView):
         else:
             self.errors = "A subnet with this name %s already exists" % data.get('name')
             return
-        # if Subnet.query.filter_by(name=data.get('name')).all():
-            # return err_json("A subnet with this name %s already exists" % data.get('name'))
+
         subnet = Subnet(name=data.get('name'),
                         netmask=data.get('netmask'),
                         options=json.dumps(data.get('options',{})),
@@ -602,16 +600,19 @@ class IPAPI(IPBaseAPI):
                 if ip.host_id:
                     host = get_by_id(Host, ip.host_id)
                     if not host.deployed:
-                        return err_json("Cannot deploy IP as parameter of non-deployed host")
+                        self.errors = "Cannot deploy IP as parameter of non-deployed host"
+                        return
 
         if 'host' in data:
             try:
                 host = get_by_field(Host, 'name', data.get('host'))
             except DhcpawnError as e:
-                return err_json(e.__str__())
+                self.errors = e.__str__()
+                return
 
             if ip.host_id == host.id:
-                return err_json("Host is already connected to this IP")
+                self.errors = "Host is already connected to this IP"
+                return
 
             ip.host_id = host.id
 
@@ -620,7 +621,7 @@ class IPAPI(IPBaseAPI):
         db.session.add(ip)
         db.session.commit()
         ip.ldap_add()
-        return jsonify(ip.config())
+        self.result = ip.config()
 
     @gen_resp_deco
     def delete(self, param):
@@ -632,12 +633,8 @@ class IPAPI(IPBaseAPI):
         self.dtask = Dtask(self.drequest.id)
         self.res = task_host_ldap_modify.delay(ip.host.id,
                                          self.dtask.id,
-                                         new_address_id='clear')
+                                               new_address_id='clear')
         self.msg = 'IP deletion async processing started.'
-        # ip.ldap_delete()
-        # db.session.delete(ip)
-        # db.session.commit()
-        # self.result = [{ip.address:ip.config()} for ip in IP.query.all()]
 
 # DHCP CLASSES
 
@@ -880,9 +877,11 @@ class DuplicateAPI(DuplicateBaseAPI):
 
 class DuplicateListAPI(DhcpawnMethodView):
 
+    @gen_resp_deco
     def get(self):
-        return jsonify([duplicate.config() if duplicate.valid
-                        else None for duplicate in Duplicate.query.all()])
+        self.result = [duplicate.config() if duplicate.valid
+                        else None for duplicate in Duplicate.query.all()]
+        self.msg = "get all duplicates"
 
 ###### Help functions
 
