@@ -98,7 +98,7 @@ class DtaskAPI(DtaskBaseAPI):
             dtask = self.get_dtask_by_param(param)
         except DhcpawnError as e:
             self.msg = 'Please make sure the id exists. to see all dtasks please use this link: %s' % url_for('rest.dhcpawn_dtask_list_api', _external=True)
-            self.errors = e.args[0]
+            self.errors = e.__str__()
             return
 
         self.result = dtask.config()
@@ -185,7 +185,7 @@ class HostBaseAPI(DhcpawnMethodView):
         try:
             new_group_id, new_address_id = host.update(**self.data)
         except DhcpawnError as e:
-            self.errors = e.args[0]
+            self.errors = e.__str__()
             return
 
         self.dtask = Dtask(self.drequest.id)
@@ -214,7 +214,7 @@ class HostAPI(HostBaseAPI):
         try:
             host = self.get_host_by_param(param)
         except DhcpawnError as e:
-            self.errors = e.args[0]
+            self.errors = e.__str__()
             return
         self.result = host.config()
 
@@ -225,7 +225,7 @@ class HostAPI(HostBaseAPI):
         try:
             host = self.get_host_by_param(param)
         except DhcpawnError as e:
-            self.errors = e.args[0]
+            self.errors = e.__str__()
             self.msg = 'did not get to the modify part. failed on getting the host to modify'
             return
 
@@ -243,7 +243,7 @@ class HostAPI(HostBaseAPI):
         try:
             host = self.get_host_by_param(param)
         except DhcpawnError as e:
-            self.errors = e.args[0]
+            self.errors = e.__str__()
             return
         self.delete_host(host)
 
@@ -436,7 +436,7 @@ class SubnetAPI(SubnetBaseAPI):
         try:
             subnet = self.get_subnet_by_param(param)
         except DhcpawnError as e:
-            return err_json(e.args[0])
+            return err_json(e.__str__())
         data = request.get_json(force=True)
         if 'netmask' in data:
             subnet.netmask = data.get('netmask')
@@ -583,7 +583,6 @@ class IPAPI(IPBaseAPI):
             self.errors = e.__str__()
         else:
             self.result = ip.config()
-            # return err_json(e.args[0])
         # return jsonify(ip.config())
 
     @gen_resp_deco
@@ -609,7 +608,7 @@ class IPAPI(IPBaseAPI):
             try:
                 host = get_by_field(Host, 'name', data.get('host'))
             except DhcpawnError as e:
-                return err_json(e.args[0])
+                return err_json(e.__str__())
 
             if ip.host_id == host.id:
                 return err_json("Host is already connected to this IP")
