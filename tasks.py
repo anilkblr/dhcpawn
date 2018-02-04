@@ -126,7 +126,7 @@ def task_host_ldap_modify(self,hid, dtask_id, **kwargs):
             _logger.error(e.__str__())
             dtask.update(
                 status='failed',
-                err_str= 'Ldap modify (add part) failed (%s)' % e.args[0][:245],
+                err_str= 'Ldap modify (add part) failed (%s)' % e.__str__()[:245],
                 desc= 'ldap modify host %s' % host.name,
                 celery_task_id=current_tid )
         else:
