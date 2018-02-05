@@ -150,15 +150,11 @@ class HostListAPI(DhcpawnMethodView):
 
     def delete(self):
         """ Delete all host records from db - only used in development mode """
-        try:
-            for h in Host.query.all():
-                db.session.delete(h)
+        for h in Host.query.all():
+            db.session.delete(h)
+        db.session.commit()
+        return jsonify("Cleared all host records from DB")
 
-            db.session.commit()
-            return jsonify("Cleared all host records from DB")
-
-        except:
-            return jsonify("Failed removing all Host records from DB")
 
 class HostBaseAPI(DhcpawnMethodView):
     def get_host_by_param(self, param):
@@ -382,7 +378,7 @@ class SubnetListAPI(DhcpawnMethodView):
             return
         try:
             Subnet.validate_by_name(data.get('name'))
-        except:
+        except DhcpawnError:
             pass
         else:
             self.errors = "A subnet with this name %s already exists" % data.get('name')
@@ -541,14 +537,10 @@ class IPListAPI(DhcpawnMethodView):
 
     def delete(self):
         """ Delete all ip records from db """
-        try:
-            for ip in IP.query.all():
-                db.session.delete(ip)
-            db.session.commit()
-            return jsonify("Cleared all ip records from DB")
-
-        except:
-            return jsonify("Failed removing all ip records from DB")
+        for ip in IP.query.all():
+            db.session.delete(ip)
+        db.session.commit()
+        return jsonify("Cleared all ip records from DB")
 
 class IPBaseAPI(DhcpawnMethodView):
     def get_ip_by_param(self, param):
@@ -1073,20 +1065,19 @@ def _hard_delete_by_name(name, group):
             db.session.commit()
         except DhcpawnError as e:
             _logger.warning("Failed hard delete for %s (%s)" % (name, e.__str__()))
-            try:
-                db.session.rollback()
-            except:
-                pass
+            db.session.rollback()
+
 
 def _hard_delete_by_mac(mac):
+    host = Host.query.filter_by(mac=mac).first()
     try:
-        host = Host.query.filter_by(mac=mac).first()
         _logger.debug("DB hard delete by mac %s" % host.config())
         host.ldap_delete()
+    except DhcpawnError as e:
+        _logger.error(f"Failed ldap delete during hard_delete_by_mac {mac}")
+    else:
         db.session.delete(host)
         db.session.commit()
-    except:
-        pass
 
 def validate_data_before_registration(data):
     """
