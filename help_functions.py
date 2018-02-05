@@ -65,11 +65,8 @@ def err_json(desc):
 def subnet_get_calc_ranges(subnet):
     """ given a subnet ,this function will return a list of
     calculated ranges belonging to it """
-    try:
-        return [crange.id for crange in subnet.calcranges.all()]
-    except:
-        _logger.debug("For some reason the subnet contains no calculated ranges to work with")
-        return []
+    return [crange.id for crange in subnet.calcranges.all()]
+
 
 
 def gen_resp(drequest=None, result=None, errors=None, msg=None):

@@ -160,10 +160,7 @@ def task_host_ldap_add(self, hid, dtask_id):
     except DhcpawnError as e:
         err_str = f"Ldap add for host {host.name} with host_id {hid} failed due to: {e.__str__()}"
         _logger.error(err_str)
-        try:
-            host.delete()
-        except:
-            pass
+        host.delete()
         dtask.update(
             status='failed',
             err_str= err_str,
