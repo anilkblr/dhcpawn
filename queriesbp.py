@@ -4,13 +4,13 @@ import logbook
 import json
 from ipaddress import IPv4Address
 
-from flask import Blueprint, request, jsonify, current_app, url_for
+from flask import Blueprint, jsonify, current_app, url_for
 from cob.celery.app import celery_app
 from cob.project import get_project
 
 from . import methodviews as mv
 from .models import Subnet, IP, CalculatedRange
-from .help_functions import subnet_get_calc_ranges, get_by_id, get_by_field, _get_or_none, gen_resp_deco
+from .help_functions import subnet_get_calc_ranges, _get_or_none, gen_resp_deco
 
 
 _logger = logbook.Logger(__name__)
@@ -86,30 +86,30 @@ def query_free_ip_by_subnet_name(sname):
     if subnet:
         taken_ips = [ip.address for ip in IP.query.all()]
         counter, free_ips = get_free_ips_per_subnet(subnet, taken_ips)
-        ret['result'] = "Number of free ips in subnet: %s" % (counter)
+        ret['result'] = f"Number of free ips in subnet: {counter} ({free_ips[:5]})"
     else:
-        ret['errors'] = "Subnet name %s is unknown" % sname
+        ret['errors'] = f"Subnet name {sname} is unknown"
     return ret
 
-@api.route('/subnets/query_free_ip_amount/', methods=['POST'])
-@gen_resp_deco
-def query_free_ip_amount():
-    """
-    query
-    the way to run it with curl:
-    curl http:/.../ -d '{"subnet":"172.16.32.0"}' -X GET
+# @api.route('/subnets/query_free_ip_amount/', methods=['POST'])
+# @gen_resp_deco
+# def query_free_ip_amount():
+#     """
+#     query
+#     the way to run it with curl:
+#     curl http:/.../ -d '{"subnet":"172.16.32.0"}' -X GET
 
-    returns: the number of free ips per given subnet
+#     returns: the number of free ips per given subnet
 
-    """
-    _logger.debug("Query Free IPs amount")
-    ret = {"errors":None, "result":None}
-    data = request.get_json(force=True)
-    subnet = get_by_field(Subnet, 'name', data.get('subnet'))
-    taken_ips = [ip.address for ip in IP.query.all()]
-    counter, free_ips = get_free_ips_per_subnet(subnet, taken_ips)
-    ret['result'] = f"Number of free ips in subnet: {counter}"
-    return ret
+#     """
+#     _logger.debug("Query Free IPs amount")
+#     ret = {"errors":None, "result":None}
+#     data = request.get_json(force=True)
+#     subnet = get_by_field(Subnet, 'name', data.get('subnet'))
+#     taken_ips = [ip.address for ip in IP.query.all()]
+#     counter, free_ips = get_free_ips_per_subnet(subnet, taken_ips)
+#     ret['result'] = f"Number of free ips in subnet: {counter}"
+#     return ret
 
 
 @api.route('/subnets/query_all_free_ip_amount/', methods=['GET'])
@@ -122,8 +122,8 @@ def query_all_free_ip_amounts():
     free_ips_dict = dict()
     taken_ips = [ip.address for ip in IP.query.all()]
     for subnet in Subnet.query.all():
-         count, _ = get_free_ips_per_subnet(subnet, taken_ips)
-         free_ips_dict[subnet.name] = (count)
+        count, _ = get_free_ips_per_subnet(subnet, taken_ips)
+        free_ips_dict[subnet.name] = (count)
 
     ret['result'] = free_ips_dict
     return jsonify(ret)
@@ -138,20 +138,11 @@ def query_subnet_from_ip(ip):
     """
     _logger.debug("Get subnet name for ip")
     ret = {"errors":None, "result":None}
-    cr_id = None
-    found = False
+    ret['result'] = "Subnet not found"
     for cr in CalculatedRange.query.all():
-        if found:
-            break
         if cr.contains(IPv4Address(ip)):
-            cr_id = cr.id
-            found = True
-
-    if found:
-        ret['result'] = cr.subnet.config()
-    else:
-        ret['errors'] = "Subnet not found"
-
+            ret['result'] = cr.subnet.config()
+            break
     return ret
 
 @api.route('/subnets/query_subnet_options/<sname>', methods=['GET'])
@@ -200,8 +191,7 @@ def get_subnet_by_name(sname):
     """
     sname should be something like data1, lab, gdc lab,...
     """
-    subnet = None
     for s in Subnet.query.all():
         if json.loads(s.options)['dhcpComments'][0].lower() == sname:
             return s
-    raise ValueError("subnet name %s doesn't exist, please provide one of: %s" % (sname, get_subnet_names()))
+    raise ValueError(f"subnet name {sname} doesn't exist, please provide one of: {get_subnet_names()}")

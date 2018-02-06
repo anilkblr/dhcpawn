@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 import os
 import glob
-import yaml
-from datetime import datetime
-import requests
-import json
 import subprocess
-from time import sleep
 
 def insert_missing_import():
     """

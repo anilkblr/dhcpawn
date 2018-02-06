@@ -6,15 +6,15 @@ import ldap
 from time import sleep
 
 from flask import current_app
-from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, \
-    SERVER_DOWN, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT
+from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, ALREADY_EXISTS, \
+    LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT
 from ipaddress import IPv4Address, IPv4Network
 from sqlalchemy_utils import IPAddressType
 from sqlalchemy.exc import IntegrityError
 from cob import db
 
 from .ldap_utils import server_dn
-from .help_functions import _get_or_none, get_by_field, DhcpawnError, get_by_id, parse_ldap_entry
+from .help_functions import _get_or_none, get_by_field, DhcpawnError, parse_ldap_entry
 
 _logger = logbook.Logger(__name__)
 
@@ -235,7 +235,7 @@ class Host(LDAPModel):
         raise DhcpawnError("Found duplication")
 
     @staticmethod
-    def host_mac_group_validation(*args,**kwargs):
+    def host_mac_group_validation(**kwargs):
         try:
             host = Host.hostname_mac_coupling_check(**kwargs)
         except DhcpawnError:
@@ -349,6 +349,7 @@ class Host(LDAPModel):
             name=name,
             mac=mac,
             group=group,
+            options=opts,
             deployed=deployed,
         )
 
@@ -855,7 +856,7 @@ class IP(db.Model):
             raise DhcpawnError("provided ip is empty")
         try:
             IP.is_ip_taken(addr)
-        except DhcpawnError as e:
+        except DhcpawnError:
             raise
         else:
             cr = IP.get_calcrange(addr)
@@ -1124,7 +1125,7 @@ class Req(db.Model):
         if not self.replied and self.reply_url:
             url = '%s%s/' % (self.reply_url, self.id)
             _logger.info("Post reply to url %s" % url)
-            res = requests.post(url, data=self.config())
+            requests.post(url, data=self.config())
             self.replied = True
             self.commit()
 
@@ -1198,7 +1199,7 @@ class Duplicate(db.Model):
         '''
         duptype can be one of the strings mac, hostname or ip
         '''
-        self.desc = description;
+        self.desc = description
         if duptype and duptype not in ['mac', 'hostname', 'ip']:
             raise DhcpawnError("Failed creating a duplication record. type should be one of mac,hostname,ip")
         self.duptype = duptype

@@ -2,43 +2,42 @@ import re
 import logbook
 import json
 
-from flask import jsonify, request, has_request_context, url_for
+from flask import jsonify, request, url_for
 from flask.views import MethodView
 from ipaddress import IPv4Address
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
-from ldap import ALREADY_EXISTS
 from werkzeug.exceptions import BadRequest
-from celery import group
+from celery import group as celery_group
 from celery.exceptions import CeleryError
 from cob import db
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
-from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco, subnet_get_calc_ranges
+from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
 from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify
 
 
 _logger = logbook.Logger(__name__)
 
 patterns = {
-    'id': ['^\d+$'],
-    'mac': ['^([0-9a-fA-F][0-9a-fA-F]:){5}([0-9a-fA-F][0-9a-fA-F])$'],
-    'name': ['^\D+[\da-zA-Z_\-]*$', '^\d[\d\.]+$'],
-    'address': ['^\d[\d\.]+$'],
-    'duptype': ['mac|ip']
+    'id': [r'^\d+$'],
+    'mac': [r'^([0-9a-fA-F][0-9a-fA-F]:){5}([0-9a-fA-F][0-9a-fA-F])$'],
+    'name': [r'^\D+[\da-zA-Z_\-]*$', r'^\d[\d\.]+$'],
+    'address': [r'^\d[\d\.]+$'],
+    'duptype': [r'mac|ip']
     }
 
 class DhcpawnMethodView(MethodView):
     ''' Used to initiate a dhcpawn Request object '''
     def __init__(self):
-       self.drequest = Req()
-       self.res = None
-       self.data = {}
-       self.msg = None
-       self.result = None
-       self.errors = None
-       self.drequest_type = None
-       self.drequest_tasks_count = None
-       self.drequest_reply_url = None
+        self.drequest = Req()
+        self.res = None
+        self.data = {}
+        self.msg = None
+        self.result = None
+        self.errors = None
+        self.drequest_type = None
+        self.drequest_tasks_count = None
+        self.drequest_reply_url = None
 
 class DRequestListAPI(DhcpawnMethodView):
 
@@ -512,7 +511,7 @@ class IPListAPI(DhcpawnMethodView):
             self.errors = e.__str__()
             return
 
-        calcrange = get_by_id(CalculatedRange, data.get('calcrange'))
+        # calcrange = get_by_id(CalculatedRange, data.get('calcrange'))
         ip = IP(address=address,
                 host_id=data.get('host'),
                 calcrange_id=data.get('calcrange'))
@@ -630,7 +629,7 @@ class IPAPI(IPBaseAPI):
         # 2. ip.delete (DB)
         self.dtask = Dtask(self.drequest.id)
         self.res = task_host_ldap_modify.delay(ip.host.id,
-                                         self.dtask.id,
+                                               self.dtask.id,
                                                new_address_id='clear')
         self.msg = 'IP deletion async processing started.'
 
@@ -670,7 +669,6 @@ class DhcpRangeListAPI(DhcpawnMethodView):
                 self.errors = f"Range overlaps with existing ranges {iprange.id}"
                 return
 
-        range_ips = []
         dhcprange = DhcpRange(
             min=data.get('min'),
             max=data.get('max'),
@@ -868,11 +866,12 @@ class DuplicateAPI(DuplicateBaseAPI):
 
     @gen_resp_deco
     def get(self, param):
+        self.msg = f"Get info about ldap duplicates with parameter {param}"
         try:
-            dups = self.get_duplicate_by_param(param)
+            self.result = self.get_duplicate_by_param(param)
         except DhcpawnError:
             return
-        self.msg = f"Get info about ldap duplicates with parameter {param}"
+
 
     @gen_resp_deco
     def post(self, param):
@@ -908,9 +907,9 @@ class DuplicateListAPI(DhcpawnMethodView):
 
 ###### Help functions
 
-def identify_param(model, param, patterns):
-    for ptype in patterns:
-        for pat in patterns[ptype]:
+def identify_param(model, param, ptrns):
+    for ptype in ptrns:
+        for pat in ptrns[ptype]:
             if re.match(pat, param):
                 return get_by_field(model, ptype, param)
     return None
@@ -976,7 +975,7 @@ class MultipleAction(DhcpawnMethodView):
                         _logger.debug("updating drequest result")
 
             # send all ldap actions to celery
-            job = group(tasks_group)
+            job = celery_group(tasks_group)
             try:
                 self.res = job.apply_async()
                 self.msg = "Registration to DB Finished. ldap async part is running. stay tuned.."
@@ -1006,7 +1005,7 @@ class MultipleAction(DhcpawnMethodView):
                         except IntegrityError as e:
                             if re.search("duplicate", e.__str__()):
                                 db.session.rollback()
-                                dup_description = re.search('Key \((.*)\).*already exists', e.__str__()).group(0)
+                                dup_description = re.search(r'Key \((.*)\).*already exists', e.__str__()).group(0)
                                 Duplicate(dup_description)
                                 _logger.error(f"DUPLICATION ERROR: {dup_description}")
 
@@ -1016,10 +1015,8 @@ class MultipleAction(DhcpawnMethodView):
         _logger.info("multiple delete")
         self.drequest_type = "Multiple Deletion"
         self.data = request.get_json(force=True)
-        deploy = False
         hard = False
         if 'deploy' in self.data:
-            deploy = self.data.get('deploy')
             del self.data['deploy']
         if 'reply_url' in self.data:
             self.drequest_reply_url = self.data.get('reply_url')
@@ -1055,7 +1052,7 @@ class MultipleAction(DhcpawnMethodView):
             else:
                 self.result = {h:validated_host_dict[h].config()}
 
-        job = group(tasks_group)
+        job = celery_group(tasks_group)
         try:
             self.res = job.apply_async()
             self.msg = 'Async deletion is running. stay tuned..'
@@ -1075,7 +1072,7 @@ def hard_delete(data):
         mac = data[h]['mac']
         group = data[h]['group']
         _hard_delete_by_name(name, group)
-        # _hard_delete_by_mac(mac)
+        _hard_delete_by_mac(mac)
 
 def _hard_delete_by_name(name, group):
     try:
@@ -1095,7 +1092,7 @@ def _hard_delete_by_name(name, group):
             db.session.delete(host)
             db.session.commit()
         except DhcpawnError as e:
-            _logger.warning("Failed hard delete for %s (%s)" % (name, e.__str__()))
+            _logger.warning(f"Failed hard delete for {name} ({e.__str__()})")
             db.session.rollback()
 
 
@@ -1104,7 +1101,7 @@ def _hard_delete_by_mac(mac):
     try:
         _logger.debug("DB hard delete by mac %s" % host.config())
         host.ldap_delete()
-    except DhcpawnError as e:
+    except DhcpawnError:
         _logger.error(f"Failed ldap delete during hard_delete_by_mac {mac}")
     else:
         db.session.delete(host)
@@ -1139,7 +1136,7 @@ def validate_data_before_registration(data):
                             group_id=group.id
                             )
             else:
-               _logger.info("Host %s already in DB. just updating it" % hdata['hostname'])
+                _logger.info("Host %s already in DB. just updating it" % hdata['hostname'])
             remove_hosts_on_fail.append(host)
             if subnet:
                 if ip == 'allocate':
@@ -1176,7 +1173,7 @@ def validate_data_before_deletion(data):
         hdata = data.get(h)
         try:
             host = Host.single_input_validate_before_deletion(hdata)
-        except DhcpawnError as e:
+        except DhcpawnError:
             raise
         else:
             validated_host_dict[h] = host
@@ -1191,16 +1188,16 @@ def alloc_single_ip(su, addr=None):
     :param addr: if a specific address in needed otherwise its find first free ip in subnet
     :return: ip database inst
     """
-    for cr_id in subnet_get_calc_ranges(su):
-        try:
-            if addr == 'allocate':
-                ip = su.allocate_free_ip()
-            else:
-                return IP.allocate_specific_ip(addr)
-        except DhcpawnError as e:
-            _logger.error(e.__str__())
-            raise DhcpawnError("Failed allocating ip %s" % addr)
-        return ip
+    # for cr_id in subnet_get_calc_ranges(su):
+    try:
+        if addr == 'allocate':
+            ip = su.allocate_free_ip()
+        else:
+            return IP.allocate_specific_ip(addr)
+    except DhcpawnError as e:
+        _logger.error(e.__str__())
+        raise DhcpawnError("Failed allocating ip %s" % addr)
+    return ip
 
 def clear_ips(ips):
     """
@@ -1215,9 +1212,7 @@ def clear_ips(ips):
             db.session.delete(ip)
             db.session.commit()
         except SQLAlchemyError as e:
-            _logger.error("Failed removing %s from DB" % ip.address)
-            pass
-            # raise DhcpawnError(e.description)
+            _logger.error(f"Failed removing {ip.address} from DB ({e.__str__()})")
 
     _logger.debug("Finished removing ips from DB after fail")
 
@@ -1234,13 +1229,13 @@ def clear_hosts(hosts):
                 host.ldap_delete()
             except DhcpawnError as e:
                 _logger.warning("Failed while cleaning LDAP after failure %s (%s)" % (host.name, e.__str__()))
-                pass
+
             db.session.delete(host)
             db.session.commit()
             _logger.info("Clear Hosts - Removed %s" % name)
         except SQLAlchemyError as e:
             _logger.error("Failed while cleaning %s after failure (%s)" % (name, e.__str__()))
-            pass
+
         _logger.info("Cleaned all remainders of %s from LDAP/DB" % name)
 
     _logger.info("Finished removing hosts from DB after fail")
@@ -1272,7 +1267,6 @@ class Sync(DhcpawnMethodView):
                 self.d['groups'].update(self.get_per_group(gr))
             else:
                 for gr in Group.query.all():
-                    k = self.get_per_group(gr)
                     self.d['groups'].update(self.get_per_group(gr))
         except DhcpawnError as e:
             self.errors = e.__str__()
