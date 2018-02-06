@@ -3,6 +3,7 @@ import re
 import logbook
 from ldap import SCOPE_SUBTREE
 from ipaddress import IPv4Address, IPv4Network
+from functools import wraps
 
 from flask import jsonify, current_app
 from sqlalchemy.exc import IntegrityError
@@ -58,10 +59,6 @@ def _get_or_none(model, id):
         return model.query.get(id)
     return None
 
-def err_json(desc):
-    return jsonify({'status':'error', 'description':desc})
-
-
 def subnet_get_calc_ranges(subnet):
     """ given a subnet ,this function will return a list of
     calculated ranges belonging to it """
@@ -79,7 +76,7 @@ def gen_resp(drequest=None, result=None, errors=None, msg=None):
         status = current_req.status
         if not result:
             result = current_req.config()
-    elif  errors:
+    elif errors:
         status = 'Failed'
     else:
         status = 'Done'
@@ -96,17 +93,21 @@ def gen_resp(drequest=None, result=None, errors=None, msg=None):
 def gen_resp_deco(func):
     ''' decorator for generating and returning the generic
     response of dhcapwn '''
+    @wraps(func)
     def decorator(*args, **kwargs):
-        obj = args[0]
-        returned = func(*args, **kwargs)
-        if obj.errors:
-            return gen_resp(errors=obj.errors, msg=obj.msg)
-        # if isinstance(returned, dict) and returned.get('status', None) == 'error':
-            # return gen_resp(errors=returned['description'])
+        if args:
+            obj = args[0]
+            func(*args, **kwargs)
+            if obj and obj.errors:
+                return gen_resp(errors=obj.errors, msg=obj.msg)
+        else:
+            returned = func(*args, **kwargs)
+            if any(key not in returned for key in ['result', 'errors']):
+                return gen_resp(errors=f"Wrong function return value {func}")
+            return gen_resp(result=returned['result'], errors=returned['errors'])
         return gen_resp(drequest=obj.drequest,
                         result=obj.result,
                         msg=obj.msg)
-        # return returned
     return decorator
 
 

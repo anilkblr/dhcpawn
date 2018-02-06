@@ -10,7 +10,7 @@ from cob.project import get_project
 
 from . import methodviews as mv
 from .models import Subnet, IP, CalculatedRange
-from .help_functions import subnet_get_calc_ranges, get_by_id, get_by_field, _get_or_none, err_json
+from .help_functions import subnet_get_calc_ranges, get_by_id, get_by_field, _get_or_none, gen_resp_deco
 
 
 _logger = logbook.Logger(__name__)
@@ -36,7 +36,6 @@ def sitemap():
             links[bp[1]].append(
                 {url_for(rule.endpoint, _external=True): str(rule.methods), 'info':bp}
                 )
-
     return jsonify(links)
 
 @api.route('/general_info/', methods=['GET'])
@@ -69,6 +68,7 @@ def clear_info_from_db():
 
 
 @api.route('/subnets/query_free_ip_by_subnet_name/<sname>', methods=['GET'])
+@gen_resp_deco
 def query_free_ip_by_subnet_name(sname):
     """
     the name can be lowercase names as seen in every subnet dhcpComments
@@ -77,6 +77,7 @@ def query_free_ip_by_subnet_name(sname):
     returns: nubmer of free ips for the given subnet
     """
     _logger.debug("Query Free IPs amount")
+    ret = {"errors":None, "result":None}
     subnet = None
     for s in Subnet.query.all():
         if json.loads(s.options)['dhcpComments'][0].lower() == sname:
@@ -85,12 +86,13 @@ def query_free_ip_by_subnet_name(sname):
     if subnet:
         taken_ips = [ip.address for ip in IP.query.all()]
         counter, free_ips = get_free_ips_per_subnet(subnet, taken_ips)
-        return jsonify("Number of free ips in subnet: %s" % (counter))
+        ret['result'] = "Number of free ips in subnet: %s" % (counter)
     else:
-        return jsonify("Subnet name %s is unknown" % sname)
-
+        ret['errors'] = "Subnet name %s is unknown" % sname
+    return ret
 
 @api.route('/subnets/query_free_ip_amount/', methods=['POST'])
+@gen_resp_deco
 def query_free_ip_amount():
     """
     query
@@ -101,63 +103,69 @@ def query_free_ip_amount():
 
     """
     _logger.debug("Query Free IPs amount")
+    ret = {"errors":None, "result":None}
     data = request.get_json(force=True)
     subnet = get_by_field(Subnet, 'name', data.get('subnet'))
     taken_ips = [ip.address for ip in IP.query.all()]
     counter, free_ips = get_free_ips_per_subnet(subnet, taken_ips)
-
-    return jsonify("Number of free ips in subnet: %s" % (counter))
+    ret['result'] = f"Number of free ips in subnet: {counter}"
+    return ret
 
 
 @api.route('/subnets/query_all_free_ip_amount/', methods=['GET'])
+@gen_resp_deco
 def query_all_free_ip_amounts():
     """
     get free_ips for all subnets
     """
+    ret = {"errors":None, "result":None}
     free_ips_dict = dict()
     taken_ips = [ip.address for ip in IP.query.all()]
     for subnet in Subnet.query.all():
          count, _ = get_free_ips_per_subnet(subnet, taken_ips)
          free_ips_dict[subnet.name] = (count)
 
-    return jsonify(free_ips_dict)
+    ret['result'] = free_ips_dict
+    return jsonify(ret)
 
 
-@api.route('/subnets/query_subnet_from_ip/', methods=['GET'])
-def query_subnet_from_ip():
+@api.route('/subnets/query_subnet_from_ip/<ip>', methods=['GET'])
+@gen_resp_deco
+def query_subnet_from_ip(ip):
     """
     this api helps during dhcpawn development, for syncing old ldap entries with current new DB.
     :return:
     """
     _logger.debug("Get subnet name for ip")
-    data = request.get_json(force=True)
-    if 'ip' not in data:
-        return err_json("Please provide ip")
-
+    ret = {"errors":None, "result":None}
     cr_id = None
     found = False
     for cr in CalculatedRange.query.all():
         if found:
             break
-        if cr.contains(IPv4Address(data.get('ip'))):
+        if cr.contains(IPv4Address(ip)):
             cr_id = cr.id
             found = True
 
     if found:
-        return jsonify(get_by_id(Subnet, cr.subnet_id).name)
+        ret['result'] = cr.subnet.config()
     else:
-        return err_json("Subnet not found")
+        ret['errors'] = "Subnet not found"
 
+    return ret
 
 @api.route('/subnets/query_subnet_options/<sname>', methods=['GET'])
-def query_get_subnet_options(sname):
+@gen_resp_deco
+def query_subnet_options(sname):
 
+    ret = {"errors":None, "result":None}
     try:
         subnet = get_subnet_by_name(sname)
     except ValueError as e:
-        return jsonify(e.args)
+        ret['errors'] = e.__str__()
 
-    return jsonify(json.loads(subnet.options))
+    ret['result'] = json.loads(subnet.options)
+    return ret
 
 #### Help funcs
 
@@ -168,6 +176,7 @@ def get_free_ips_per_subnet(subnet, taken_ips):
     """
     free_ips = []
     counter = 0
+    _logger.info(f"checking in subnet {subnet}")
     for cr_id in subnet_get_calc_ranges(subnet):
         cr = _get_or_none(CalculatedRange, cr_id)
         addr = cr.min - 1

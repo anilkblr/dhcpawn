@@ -13,7 +13,7 @@ from celery.exceptions import CeleryError
 from cob import db
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
-from .help_functions import err_json, _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco, subnet_get_calc_ranges
+from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco, subnet_get_calc_ranges
 from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify
 
 
@@ -259,9 +259,11 @@ class GroupListAPI(DhcpawnMethodView):
         self.msg = "Create new group"
         data = request.get_json(force=True)
         if any(key not in data for key in ['name']):
-            return err_json("Group requires name")
+            self.errors = "Please provide group name"
+            return
         if Group.query.filter(Group.name == data.get('name')).all():
-            return err_json("A Group with this name already exists")
+            self.errors = "A Group with this name already exists"
+            return
         group = Group(name=data.get('name'),
                       options=json.dumps(data.get('options', {})),
                       deployed=data.get('deployed'))
@@ -430,7 +432,8 @@ class SubnetAPI(SubnetBaseAPI):
         try:
             subnet = self.get_subnet_by_param(param)
         except DhcpawnError as e:
-            return err_json(e.__str__())
+            self.errors = e.__str__()
+            return
         data = request.get_json(force=True)
         if 'netmask' in data:
             subnet.netmask = data.get('netmask')
@@ -524,7 +527,8 @@ class IPListAPI(DhcpawnMethodView):
         ip.deployed = data.get('deployed', True)
         if data.get('deployed'):
             if ip.deployed and not deployable:
-                return err_json("Cannot deploy IP in non-deployed host or range")
+                self.errors = "Cannot deploy IP in non-deployed host or range"
+                return
         else:
             if not deployable:
                 ip.deployed = False
@@ -581,10 +585,12 @@ class IPAPI(IPBaseAPI):
         try:
             ip = self.get_ip_by_param(param)
         except DhcpawnError as e:
-            return err_json(e.__str__())
+            self.errors = e.__str__()
+            return
         data = request.get_json(force=True)
         if any(key not in ['host', 'deployed'] for key in data):
-            return err_json("IP PUT requests only accept host")
+            self.errors = "IP PUT requests only accept host"
+            return
 
         if 'deployed' in data:
             deployed = data.get('deployed')
@@ -630,18 +636,24 @@ class IPAPI(IPBaseAPI):
 
 # DHCP CLASSES
 
-class DhcpRangeListAPI(MethodView):
+class DhcpRangeListAPI(DhcpawnMethodView):
 
+    @gen_resp_deco
     def get(self):
         ranges = DhcpRange.query.all()
-        return jsonify(dict(items=[range.config() for range in ranges]))
+        self.msg = "Get all dhcpranges"
+        self.result = dict(items=[range.config() for range in ranges])
 
+    @gen_resp_deco
     def post(self):
+        self.msg = "Create new dhcprange"
         data = request.get_json(force=True)
         if any(key not in data for key in ['min', 'max']):
-            return err_json("Dhcp Range requires a min, and max")
+            self.errors = "Dhcp Range requires a min, and max"
+            return
         if all(key not in data for key in ['pool', 'pool_name']):
-            return err_json("Dhcp Range requires a pool_id or a pool_name")
+            self.errors = "Dhcp Range requires a pool_id (pool key in data) or a pool_name"
+            return
 
         if 'pool' in data:
             pool_id = data.get('pool')
@@ -655,7 +667,8 @@ class DhcpRangeListAPI(MethodView):
 
         for iprange in DhcpRange.query.all():
             if iprange.contains(ipmin) or iprange.contains(ipmax):
-                return err_json("Range overlaps with existing ranges %s" % (iprange.id))
+                self.errors = f"Range overlaps with existing ranges {iprange.id}"
+                return
 
         range_ips = []
         dhcprange = DhcpRange(
@@ -668,10 +681,9 @@ class DhcpRangeListAPI(MethodView):
         db.session.add(dhcprange)
         db.session.commit()
         dhcprange.ldap_add()
-        return jsonify(dhcprange.config())
+        self.result = dhcprange.config()
 
-
-class DhcpRangeAPI(MethodView):
+class DhcpRangeAPI(DhcpawnMethodView):
 
     def get(self, dhcp_range_id):
         pass
@@ -684,18 +696,24 @@ class DhcpRangeAPI(MethodView):
 
 # CALCULATED CLASSES
 
-class CalculatedLRangeListAPI(MethodView):
+class CalculatedLRangeListAPI(DhcpawnMethodView):
 
+    @gen_resp_deco
     def get(self):
+        self.msg = "Get all calculated ranges"
         ranges = CalculatedRange.query.all()
-        return jsonify(dict(items=[range.config() for range in ranges]))
+        self.result = dict(items=[range.config() for range in ranges])
 
+    @gen_resp_deco
     def post(self):
+        self.msg = "Create new calculated range"
         data = request.get_json(force=True)
         if any(key not in data for key in ['min', 'max']):
-            return err_json("Calculated Range requires a min, and max")
+            self.errors = "Calculated Range requires a min, and max"
+            return
         if all(key not in data for key in ['subnet', 'subnet_name']):
-            return err_json("Calculated Range requires a subnet_id or subnet_name")
+            self.errors = "Calculated Range requires a subnet_id or subnet_name"
+            return
         ipmin = IPv4Address(data.get('min'))
         ipmax = IPv4Address(data.get('max'))
 
@@ -707,7 +725,8 @@ class CalculatedLRangeListAPI(MethodView):
 
         for iprange in CalculatedRange.query.all():
             if iprange.contains(ipmin) or iprange.contains(ipmax):
-                return err_json("Range overlaps with existing ranges %s" % (iprange.id))
+                self.errors = f"Range overlaps with existing ranges {iprange.id}"
+                return
         calcrange = CalculatedRange(
             min=data.get('min'),
             max=data.get('max'),
@@ -715,10 +734,9 @@ class CalculatedLRangeListAPI(MethodView):
         )
         db.session.add(calcrange)
         db.session.commit()
-        return jsonify(calcrange.config())
+        self.result = calcrange.config()
 
-
-class CalculatedRangeAPI(MethodView):
+class CalculatedRangeAPI(DhcpawnMethodView):
 
     def get(self, calc_range_id):
         pass
@@ -731,24 +749,31 @@ class CalculatedRangeAPI(MethodView):
 
 # POOL CLASSES
 
-class PoolListAPI(MethodView):
+class PoolListAPI(DhcpawnMethodView):
 
+    @gen_resp_deco
     def get(self):
+        self.msg = "Get all pools"
         pools = Pool.query.all()
-        return jsonify(dict(items=[pool.config() for pool in pools]))
+        self.result = dict(items=[pool.config() for pool in pools])
 
+    @gen_resp_deco
     def post(self):
         """ Create Pool but only in db
             only when we add a dhcpRange , we can deploy to ldap
         """
+        self.msg = "Create new pool"
         data = request.get_json(force=True)
         if 'name' not in data:
-            return err_json("Pool requires a name")
+            self.errors = "Pool requires a name"
+            return
         if all(key not in data for key in ['subnet', 'subnet_name']):
-            return err_json("Pool requires either a subnet id or a subnet name")
+            self.errors = "Pool requires either a subnet id or a subnet name"
+            return
 
         if Pool.query.filter(Pool.name == data.get('name')).all():
-            return err_json("A pool by this name already exists")
+            self.errors = "A pool by this name already exists"
+            return
 
         if 'subnet' in data:
             subnet_id = data.get('subnet')
@@ -767,21 +792,24 @@ class PoolListAPI(MethodView):
         db.session.commit()
         if pool.deployed:
             pool.ldap_add()
-        return jsonify(pool.config())
+        self.result = pool.config()
 
+class PoolAPI(DhcpawnMethodView):
 
-class PoolAPI(MethodView):
-
+    @gen_resp_deco
     def get(self, pool_id):
+        self.msg = f"Get pool by pool id {pool_id}"
         pool = get_by_id(Pool, pool_id)
-        return jsonify(pool.config())
+        self.result = pool.config()
 
+    @gen_resp_deco
     def put(self, pool_id):
         """
         basically using this method to update dhcpRange
         and then deploy pool to ldap
         of course other changes may apply too
         """
+        self.msg = "Update pool"
         pool = get_by_id(Pool, pool_id)
         data = request.get_json(force=True)
         if 'deployed' in data:
@@ -790,7 +818,8 @@ class PoolAPI(MethodView):
                 if pool.subnet_id:
                     subnet = get_by_id(Subnet, pool.subnet_id)
                     if not subnet.deployed:
-                        return err_json("Cannot deploy pool with non-deployed subnet")
+                        self.errors = "Cannot deploy pool with non-deployed subnet"
+                        return
         pool.ldap_delete()
         if 'name' in data:
             pool.name = data.get('name')
@@ -808,16 +837,18 @@ class PoolAPI(MethodView):
         db.session.add(pool)
         db.session.commit()
         pool.ldap_add()
-        return jsonify(pool.config())
+        self.result = pool.config()
 
+    @gen_resp_deco
     def delete(self, pool_id):
+        self.msg = "Delete pool by id {pool_id}"
         pool = get_by_id(Pool, pool_id)
         pool.ldap_delete()
         if pool.range:
             db.session.delete(pool.range)
         db.session.delete(pool)
         db.session.commit()
-        return jsonify([pool.config() for pool in Pool.query.all()])
+        self.result = [pool.config() for pool in Pool.query.all()]
 
 # Duplicate Class
 class DuplicateBaseAPI(DhcpawnMethodView):
