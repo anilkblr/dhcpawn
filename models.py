@@ -90,12 +90,10 @@ class LDAPModel(db.Model):
                 except (TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT)  as e:
                     _logger.debug(e.__str__())
                     exc_type_list.append(type(e).__name__)
-                    pass
                 except ldap.SERVER_DOWN as e:
                     _logger.debug(e.__str__())
                     exc_type_list.append(type(e).__name__)
                     sleep(1)
-                    pass
 
     def ldap_add(self):
         raise RuntimeError("prevent ldap_add from running")

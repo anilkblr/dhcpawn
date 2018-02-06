@@ -1,5 +1,5 @@
 [MESSAGES CONTROL]
-disable=R,C
+disable=R,C, attribute-defined-outside-init
 
 [FORMAT]
 max-line-length=150
