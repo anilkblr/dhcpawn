@@ -18,11 +18,11 @@ _logger = logbook.Logger(__name__)
 class DhcpawnError(Exception):
     pass
 
-def get_by_id(model, id):
+def get_by_id(model, model_id):
 
-    toreturn =  model.query.get(id)
+    toreturn =  model.query.get(model_id)
     if not toreturn:
-        raise DhcpawnError("%s with id %s does not exist in db" % (model.__name__, str(id)))
+        raise DhcpawnError(f"{model.__name__} with id {str(model_id)} does not exist in db")
     return toreturn
 
 
@@ -54,9 +54,9 @@ def get_by_field(model, field, value):
 
     return rv
 
-def _get_or_none(model, id):
-    if id:
-        return model.query.get(id)
+def _get_or_none(model, model_id):
+    if model_id:
+        return model.query.get(model_id)
     return None
 
 def subnet_get_calc_ranges(subnet):
@@ -120,7 +120,7 @@ def update_req(func):
         obj = args[0]
         db.session.add(obj.drequest)
         db.session.commit()
-        returned = func(*args, **kwargs)
+        func(*args, **kwargs)
         if obj.errors:
             return
         # if isinstance(returned, dict) and returned.get('status', None) == 'error':
@@ -201,7 +201,6 @@ def extract_skeleton():
                 'calcranges':{},
                 }
     basedn = config['PRODUCTION_LDAP_DN']
-    ldap_obj = current_app.ldap_obj
     rawdata = current_app.ldap_obj.search_s(basedn, SCOPE_SUBTREE, '(objectClass=*)')
 
     s = dict()

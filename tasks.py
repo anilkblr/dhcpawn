@@ -27,7 +27,7 @@ def task_get_sync_stat():
     for gr in Group.query.all():
         try:
             stat.update(gr.get_sync_stat())
-        except DhcpawnError as e:
+        except DhcpawnError:
             pass
 
     return stat
@@ -44,12 +44,12 @@ def task_sync():
             stat.update(tmpd)
             if host_stat_dict:
                 post_sync['groups'].update(host_stat_dict)
-        except DhcpawnError as e:
+        except DhcpawnError:
             pass
 
     if post_sync['groups']:
-            return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
-                    'post sync': {k:v for k,v in post_sync.items() if v} }
+        return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
+                'post sync': {k:v for k,v in post_sync.items() if v} }
     else:
         return stat
 
@@ -141,7 +141,8 @@ def task_host_ldap_modify(self,hid, dtask_id, **kwargs):
     finally:
         dreq = Req.query.get(dtask.dreq_id)
         dreq.refresh_status()
-        return "%s - %s" % (dtask.desc ,dtask.status)
+
+    return "%s - %s" % (dtask.desc ,dtask.status)
 
 @task(bind=True, use_app_context=True, reject_on_worker_lost=True,
       autoretry_for=(ldap.TIMEOUT,ldap.SERVER_DOWN, ), retry_kwargs={'max_retries': 1}, default_retry_delay=60)
