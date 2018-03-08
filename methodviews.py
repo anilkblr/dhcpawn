@@ -1,7 +1,7 @@
 import re
 import logbook
 import json
-
+from sqlalchemy import desc
 from flask import jsonify, request, url_for
 from flask.views import MethodView
 from ipaddress import IPv4Address
@@ -13,7 +13,7 @@ from cob import db
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
 from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
-from .tasks import task_host_ldap_delete, task_host_ldap_add, task_host_ldap_modify
+from .tasks import *
 
 
 _logger = logbook.Logger(__name__)
@@ -44,7 +44,7 @@ class DRequestListAPI(DhcpawnMethodView):
     @gen_resp_deco
     def get(self):
         ''' used to get all requests from db '''
-        reqs = Req.query.all()
+        reqs = Req.query.order_by(desc('id')).all()
         self.result = dict(items=[req.config() for req in reqs])
         self.msg = 'get all requests info'
 
@@ -928,123 +928,108 @@ class MultipleAction(DhcpawnMethodView):
         - no ip is allocated.
         """
         _logger.debug(f"multiple register")
-        self.drequest_type = "Multiple Registration"
+        self.drequest.request_type = "Async Multiple Registration"
         self.data = request.get_json(force=True)
+        self.drequest.update_drequest(params=self.data)
         deploy = "True"
+        sync = False
         if 'deploy' in self.data:
             deploy = self.data.get('deploy')
             del self.data['deploy']
         if 'reply_url' in self.data:
-            self.drequest_reply_url = self.data.get('reply_url')
+            self.drequest.update_drequest(drequest_reply_url = self.data.get('reply_url'))
             del self.data['reply_url']
+        if 'sync' in self.data and self.data.get('sync') == 'true':
+            sync = True
+            self.drequest_type = "Sync Multiple Registration"
         if deploy.lower()=="true":
-            _logger.debug("DEPLOY=%s" % deploy)
-            _logger.info(f"Data size: {len(self.data)}")
+            # _logger.debug("DEPLOY=%s" % deploy)
+            # _logger.info(f"Data size: {len(self.data)}")
             # this is the day to day part of the code
             # validation is needed and all the rest of the flow
-            try:
-                validated_host_dict, remove_ips_on_fail = validate_data_before_registration(self.data)
-            except DhcpawnError as e:
-                self.errors = e.__str__()
-                return
-
-            # if we got here , all entries got their ips and we can commit to DB and
-            # add to LDAP
-            remove_hosts_on_fail = []
-            tasks_group = []
             dtasks_group = []
-            for su in validated_host_dict.keys():
-                for hst in validated_host_dict[su].keys():
-                    db.session.add(validated_host_dict[su][hst])
-                    remove_hosts_on_fail.append(validated_host_dict[su][hst])
-                    try:
-                        db.session.commit()
-                    except DhcpawnError as e:
-                        _logger.error(e.__str__())
-                        db.session.rollback()
-                        continue
-                    dtasks_group.append(Dtask(self.drequest.id))
-                    # res = Host.drequest_ldap_add(validated_host_dict[su][hst].id, dtasks_group[-1].id)
-                    tinput = {
-                        'hid':validated_host_dict[su][hst].id,
-                        'dtask_id':dtasks_group[-1].id
+            tasks_group = []
+            for hdata in self.data:
+                dtasks_group.append(Dtask(self.drequest.id))
+                tinput = {
+                    'hkey': hdata,
+                    'hdata': self.data[hdata],
+                    'dtask_id':dtasks_group[-1].id
                     }
-                    # tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id, dtasks_group[-1].id))
-                    tasks_group.append(task_host_ldap_add.s(**tinput))
-                    if isinstance(self.result, dict):
-                        self.result.update({hst:validated_host_dict[su][hst].config()})
-                    else:
-                        self.result = {hst:validated_host_dict[su][hst].config()}
-                        # _logger.debug("updating drequest result")
-            # send all ldap actions to celery
-            # job = celery_group(tasks_group)
-            job = chain(*tasks_group)
-            try:
-                self.res = job.apply_async()
+                if sync:
+                    tasks_group.append(Host.single_host_register_track(**tinput))
+                else:
+                    tasks_group.append(task_single_input_registration.s(**tinput))
+
+
+
+            if sync:
+                self.drequest.refresh_status()
+                from time import sleep
+                self.drequest.postreply()
+                self.msg = 'The Sync Way'
+            else:
+                tinput = {'dreq_id': self.drequest.id}
+                # tasks_group.append(task_send_postreply.s(**tinput))
+                register_chain = chain(*tasks_group)
+                refresh_request_job = task_update_drequest.s(**tinput)
+                post_reply_job = task_send_postreply.s(**tinput)
+                full_chain = chain(register_chain, refresh_request_job, post_reply_job)
+                res = full_chain.apply_async()
                 self.msg = f"Registration to DB Finished. ldap async part is running. stay tuned.. {self.res}"
-            except CeleryError as e:
-                self.errors = e.__str__()
-                self.msg = "Registration failed ,please check the errors part"
-                clear_ips(remove_ips_on_fail)
-                clear_hosts(remove_hosts_on_fail)
-                return
 
     @gen_resp_deco
     @update_req
     def delete(self):
         _logger.info("multiple delete")
-        self.drequest_type = "Multiple Deletion"
+        self.drequest.request_type = "Async Multiple Deletion"
         self.data = request.get_json(force=True)
+        self.drequest.update_drequest(params=self.data)
         hard = False
+        sync = False
         if 'deploy' in self.data:
             del self.data['deploy']
         if 'reply_url' in self.data:
-            self.drequest_reply_url = self.data.get('reply_url')
+            self.drequest.update_drequest(drequest_reply_url = self.data.get('reply_url'))
+            # self.drequest_reply_url = self.data.get('reply_url')
             del self.data['reply_url']
         if 'hard' in self.data:
             del self.data['hard']
             hard = True
+        if 'sync' in self.data and self.data.get('sync') == 'true':
+            sync = True
+            self.drequest_type = "Sync Multiple Deletion"
+            del self.data['sync']
 
-        if hard:
-            self.msg = "Performing hard delete by hostname"
-            _logger.warning(self.msg)
-            try:
-                hard_delete(self.data)
-            except DhcpawnError as e:
-                raise DhcpawnError('Failed hard delete (%s)' % e.__str__())
-            else:
-                return
-        try:
-            validated_host_dict = validate_data_before_deletion(self.data)
-        except DhcpawnError as e:
-            self.errors = e.__str__()
-            self.msg = "Failed data validation in multiple delete"
-            _logger.info("HERE EXCEPTION")
-            return
-
-        tasks_group = []
         dtasks_group = []
-        for hst in validated_host_dict:
+        tasks_group = []
+        for hdata in self.data:
             dtasks_group.append(Dtask(self.drequest.id))
             tinput = {
-                'hid':validated_host_dict[hst].id,
+                'hkey': hdata,
+                'hdata': self.data[hdata],
                 'dtask_id':dtasks_group[-1].id
             }
-            tasks_group.append(task_host_ldap_delete.s(**tinput))
-            if isinstance(self.result, dict):
-                self.result.update({hst:validated_host_dict[hst].config()})
+            if sync:
+                tasks_group.append(Host.single_host_delete_track(**tinput))
             else:
-                self.result = {hst:validated_host_dict[hst].config()}
+                tasks_group.append(task_single_input_deletion.s(**tinput))
 
-        job = chain(*tasks_group)
-        try:
-            self.res = job.apply_async()
-            self.msg = 'Async deletion is running. stay tuned..'
-        except CeleryError as e:
-            self.errors = e.__str__()
-            self.msg = "Deletion failed ,please check the errors part"
+        if sync:
+            self.drequest.refresh_status()
+            self.drequest.postreply()
+            self.msg = 'The Sync Way'
+        else:
 
-
+            tinput = {'dreq_id': self.drequest.id}
+            # tasks_group.append(task_send_postreply.s(**tinput))
+            delete_chain = chain(*tasks_group)
+            refresh_request_job = task_update_drequest.s(**tinput)
+            post_reply_job = task_send_postreply.s(**tinput)
+            _logger.debug("Adding post reply task to chain")
+            full_chain = chain(delete_chain, refresh_request_job, post_reply_job)
+            res = full_chain.apply_async()
+            self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {self.res}"
 
 #### HELP FUNCTIONS
 def hard_delete(data):
@@ -1163,24 +1148,24 @@ def validate_data_before_deletion(data):
 
     return validated_host_dict
 
-def alloc_single_ip(su, addr=None):
-    """
-    go over subnet calculated ranges and find a free ip if addr=None
-    or check if the specific address is free to allocate
-    :param su: subnet in which the ip should be
-    :param addr: if a specific address in needed otherwise its find first free ip in subnet
-    :return: ip database inst
-    """
-    # for cr_id in subnet_get_calc_ranges(su):
-    try:
-        if addr == 'allocate':
-            ip = su.allocate_free_ip()
-        else:
-            return IP.allocate_specific_ip(addr)
-    except DhcpawnError as e:
-        _logger.error(e.__str__())
-        raise DhcpawnError("Failed allocating ip %s" % addr)
-    return ip
+# def alloc_single_ip(su, addr=None):
+#     """
+#     go over subnet calculated ranges and find a free ip if addr=None
+#     or check if the specific address is free to allocate
+#     :param su: subnet in which the ip should be
+#     :param addr: if a specific address in needed otherwise its find first free ip in subnet
+#     :return: ip database inst
+#     """
+#     # for cr_id in subnet_get_calc_ranges(su):
+#     try:
+#         if addr == 'allocate':
+#             ip = su.allocate_free_ip()
+#         else:
+#             return IP.allocate_specific_ip(addr)
+#     except DhcpawnError as e:
+#         _logger.error(e.__str__())
+#         raise DhcpawnError("Failed allocating ip %s" % addr)
+#     return ip
 
 def clear_ips(ips):
     """

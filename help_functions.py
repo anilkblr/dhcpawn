@@ -1,5 +1,6 @@
 import json
 import re
+import os
 import logbook
 from ldap import SCOPE_SUBTREE
 from ipaddress import IPv4Address, IPv4Network
@@ -14,14 +15,44 @@ from cob.project import get_project
 _logger = logbook.Logger(__name__)
 ##### Helping functions ########
 
+__all__ = ['DhcpawnError', 'DuplicateError', 'MissingMandatoryArgsError',
+           'ValidationError', 'InputValidationError', 'DoNothingRecordExists',
+           'BadSubnetName', 'IPAlreadyExists', 'ConflictingParamsError', 'DoNothingRecordNotInDB']
 
 class DhcpawnError(Exception):
+    pass
+
+class DuplicateError(DhcpawnError):
     pass
 
 class MissingMandatoryArgsError(DhcpawnError):
     pass
 
-class InputValidationError(DhcpawnError):
+class ValidationError(DhcpawnError):
+    pass
+
+class BadSubnetName(DhcpawnError):
+    pass
+
+class IPAlreadyExists(DhcpawnError):
+    pass
+
+class InputValidationError(ValidationError):
+    pass
+
+class DoNothing(DhcpawnError):
+    pass
+
+class DoNothingRecordExists(DoNothing):
+    ''' for registration of an existing record with exact params'''
+    pass
+
+class DoNothingRecordNotInDB(DoNothing):
+    '''when trying to remove a record but its not in DB (query by hostname gives nothing) '''
+    pass
+
+class ConflictingParamsError(DhcpawnError):
+    '''when trying to delete a host, request params should be identical to what is in DB '''
     pass
 
 def get_by_id(model, model_id):
@@ -71,7 +102,10 @@ def subnet_get_calc_ranges(subnet):
     return [crange.id for crange in subnet.calcranges.all()]
 
 def gen_resp(drequest=None, result=None, errors=None, msg=None):
-    ''' return generic response '''
+    ''' return generic response
+    TODO: remove any logic that set "status" of the json response
+    for now i just removed it from the returned json'''
+
     if drequest:
         current_req =  drequest.query.filter_by(id=drequest.id).first()
 
@@ -92,7 +126,6 @@ def gen_resp(drequest=None, result=None, errors=None, msg=None):
         'errors': errors,
         'request_id': drequest.id if drequest else None,
         'user_msg': msg,
-        'status': status
         }
     return jsonify(returned)
 
@@ -132,13 +165,13 @@ def update_req(func):
                                          params=obj.data)
             return
 
-        if hasattr(obj, 'drequest'):
-            _logger.info("Updating dRequest Object")
-            obj.drequest.update_drequest(drequest_type=obj.drequest_type,
-                                         drequest_reply_url=obj.drequest_reply_url,
-                                         drequest_result=json.dumps(obj.result),
-                                         tasks_list=get_full_chain_tasks_list(obj.res),
-                                         params=obj.data)
+        # if hasattr(obj, 'drequest'):
+        #     _logger.info(f"Updating dRequest {obj.drequest.id} instance inside update_req decorator")
+        #     _logger.info(f"type = {obj.drequest_type}")
+        #     obj.drequest.update_drequest(drequest_type=obj.drequest_type ,
+        #                                  drequest_reply_url=obj.drequest_reply_url,
+        #                                  tasks_list=get_full_chain_tasks_list(obj.res),
+        #                                  params=obj.data)
 
     return decorator
 
@@ -193,7 +226,7 @@ def extract_skeleton():
                 'pools':{},
                 'calcranges':{},
                 }
-    basedn = config['PRODUCTION_LDAP_DN']
+    basedn = os.getenv('_DHCPAWN_PRODUCTION_LDAP_DN')
     rawdata = current_app.ldap_obj.search_s(basedn, SCOPE_SUBTREE, '(objectClass=*)')
 
     s = dict()
