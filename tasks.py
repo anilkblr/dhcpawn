@@ -8,7 +8,8 @@ from cob import task, db
 from cob.project import get_project
 from .models import Host, Group, Req, db, Dtask, IP
 from .help_functions import DhcpawnError
-
+from celery.exceptions import WorkerLostError, TimeLimitExceeded
+from ldap import LDAPError, TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN
 if get_project().config.get('sync_config'):
     sync_every = get_project().config['sync_config']['group_sync_every']
     stat_every = get_project().config['sync_config']['sync_stat_every']
@@ -144,76 +145,75 @@ def task_host_ldap_modify(self,hid, dtask_id, **kwargs):
 
     return "%s - %s" % (dtask.desc ,dtask.status)
 
-@task(bind=True, use_app_context=True, reject_on_worker_lost=True,
-      autoretry_for=(ldap.TIMEOUT,ldap.SERVER_DOWN, ), retry_kwargs={'max_retries': 1}, default_retry_delay=60)
-def task_host_ldap_add(self, hid, dtask_id):
+# @task(bind=True, use_app_context=True, reject_on_worker_lost=True,
+#       autoretry_for=(ldap.TIMEOUT,ldap.SERVER_DOWN, DhcpawnError), retry_kwargs={'max_retries': 3}, default_retry_delay=120)
+# @task(bind=True, use_app_context=True, time_limit=60,
+      # reject_on_worker_lost=True, autoretry_for=(WorkerLostError,DhcpawnError, TimeLimitExceeded), acks_late=True )
+@task(bind=True, use_app_context=True)
+# def task_host_ldap_add(self, hid, dtask_id, *args):
+def task_host_ldap_add(self, *args, **kwargs):
     ''' after creating new host in db
     run async task to udpate LDAP
     hid = host id
     dreq_id = the related dhcpawn request id
     '''
+    # from pudb.remote import set_trace;set_trace(term_size=(160,40), host='0.0.0.0', port=dtask_id)
     current_tid = self.request.id # task_id of the task we are in
-    host = Host.query.get(hid)
-    dtask = Dtask.query.get(dtask_id)
-    err_str = ''
+    hid = kwargs.get('hid')
+    dtask_id = kwargs.get('dtask_id')
     try:
-        host.ldap_add()
-    except DhcpawnError as e:
-        err_str = f"Ldap add for host {host.name} with host_id {hid} failed due to: {e.__str__()}"
-        _logger.error(err_str)
-        host.delete()
-        dtask.update(
-            status='failed',
-            err_str= err_str,
-            desc= 'ldap add host %s' % host.name,
-            celery_task_id=current_tid
-            )
+        return Host.drequest_ldap_add(hid, dtask_id, current_tid)
+    except LDAPError as e:
+        _logger.debug(e.__str__())
+        raise self.retry(countdown=10, exc=e, max_retries=1)
     else:
-        dtask.update(
-            status= 'succeeded',
-            desc= 'ldap add host %s' % host.name,
-            celery_task_id= current_tid
-        )
-
-    dreq = Req.query.get(dtask.dreq_id)
-    dreq.refresh_status()
-
-    return "%s - %s - %s" % (dtask.desc ,dtask.status, err_str)
+        _logger.warning("In task after retry {current_id}")
 
 @task(bind=True, use_app_context=True)
-def task_host_ldap_delete(self, hid, dtask_id):
+# def task_host_ldap_delete(self, hid, dtask_id):
+def task_host_ldap_delete(self, *args, **kwargs):
     '''
     just delete LDAP entry for a specific host
     hid = host id
     '''
     current_tid = self.request.id # task_id from this task instance
-    host = Host.query.get(hid)
-    dtask = Dtask.query.get(dtask_id)
-    err_str = ''
+    hid = kwargs.get('hid')
+    dtask_id = kwargs.get('dtask_id')
     try:
-        host.ldap_delete()
-    except DhcpawnError as e:
-        err_str = f"Ldap delete for host {host.name} with host_id {hid} failed due to: {e.__str__()}"
-        _logger.error(err_str)
-        dtask.update(
-            status='failed',
-            err_str= err_str,
-            desc='ldap delete host %s' % host.name,
-            celery_task_id=current_tid
-        )
+        return Host.drequest_ldap_delete(hid, dtask_id, current_tid)
+    except LDAPError as e:
+        _logger.debug(e.__str__())
+        raise self.retry(countdown=10, exc=e, max_retries=1)
     else:
-        _logger.debug('Host (%s) was also be deleted from DB', host.name)
-        if host.ip:
-            db.session.delete(host.ip)
-        db.session.delete(host)
-        db.session.commit()
+        _logger.warning("In task after retry {current_id}")
 
-        dtask.update(
-            status='succeeded',
-            desc='DB delete host %s' % host.name,
-            celery_task_id=current_tid
-        )
-        dreq = Req.query.get(dtask.dreq_id)
-        dreq.refresh_status()
+    # host = Host.query.get(hid)
+    # dtask = Dtask.query.get(dtask_id)
+    # err_str = ''
+    # try:
+    #     host.ldap_delete()
+    # except DhcpawnError as e:
+    #     err_str = f"Ldap delete for host {host.name} with host_id {hid} failed due to: {e.__str__()}"
+    #     _logger.error(err_str)
+    #     dtask.update(
+    #         status='failed',
+    #         err_str= err_str,
+    #         desc='ldap delete host %s' % host.name,
+    #         celery_task_id=current_tid
+    #     )
+    # else:
+    #     _logger.debug('Host (%s) was also be deleted from DB', host.name)
+    #     if host.ip:
+    #         db.session.delete(host.ip)
+    #     db.session.delete(host)
+    #     db.session.commit()
 
-    return "%s - %s - %s" % (dtask.desc, dtask.status, err_str)
+    #     dtask.update(
+    #         status='succeeded',
+    #         desc='DB delete host %s' % host.name,
+    #         celery_task_id=current_tid
+    #     )
+    #     dreq = Req.query.get(dtask.dreq_id)
+    #     dreq.refresh_status()
+
+    # return "%s - %s - %s" % (dtask.desc, dtask.status, err_str)

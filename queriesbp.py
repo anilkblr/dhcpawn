@@ -41,7 +41,6 @@ def sitemap():
 @api.route('/general_info/', methods=['GET'])
 def general_info():
     config = get_project().config
-
     broker_connection = re.match('.* (amqp://.*//) at', celery_app.broker_connection().__str__())[1]
     info = {
         'LDAP': {
@@ -54,6 +53,9 @@ def general_info():
             },
         'CELERY': {
             'BROKER': broker_connection
+            },
+        'SERVER': {
+            'LOG LEVEL': _logger.level_name
             }
         }
     return jsonify(info)

@@ -2,7 +2,7 @@
 import logbook
 import json
 
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from cob import db
 
 from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange
@@ -99,6 +99,7 @@ def deploy_server():
     2. The hosts info for each group
     '''
     # deploy skeleton
+    data = request.get_json(force=True)
     skeleton = extract_skeleton()
     deploy_groups(skeleton)
     deploy_subnets(skeleton)
@@ -107,8 +108,9 @@ def deploy_server():
     deploy_dhcpranges(skeleton)
 
     # deploy hosts info per group
-    for gr in Group.query.all():
-        gr.deploy()
+    if data['hosts'] == 'True':
+        for gr in Group.query.all():
+            gr.deploy()
 
     return ("Finished Deployment Stage")
 

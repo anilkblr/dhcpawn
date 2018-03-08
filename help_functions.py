@@ -18,6 +18,12 @@ _logger = logbook.Logger(__name__)
 class DhcpawnError(Exception):
     pass
 
+class MissingMandatoryArgsError(DhcpawnError):
+    pass
+
+class InputValidationError(DhcpawnError):
+    pass
+
 def get_by_id(model, model_id):
 
     toreturn =  model.query.get(model_id)
@@ -64,18 +70,18 @@ def subnet_get_calc_ranges(subnet):
     calculated ranges belonging to it """
     return [crange.id for crange in subnet.calcranges.all()]
 
-
-
 def gen_resp(drequest=None, result=None, errors=None, msg=None):
     ''' return generic response '''
-
     if drequest:
         current_req =  drequest.query.filter_by(id=drequest.id).first()
 
     if drequest and current_req:
-        status = current_req.status
-        if not result:
-            result = current_req.config()
+        if errors:
+            status = 'Failed'
+        else:
+            status = current_req.status
+            if not result:
+                result = current_req.config()
     elif errors:
         status = 'Failed'
     else:
@@ -99,7 +105,7 @@ def gen_resp_deco(func):
             obj = args[0]
             func(*args, **kwargs)
             if obj and obj.errors:
-                return gen_resp(errors=obj.errors, msg=obj.msg)
+                return gen_resp(drequest=obj.drequest, errors=obj.errors, msg=obj.msg)
         else:
             returned = func(*args, **kwargs)
             if any(key not in returned for key in ['result', 'errors']):
@@ -109,7 +115,6 @@ def gen_resp_deco(func):
                         result=obj.result,
                         msg=obj.msg)
     return decorator
-
 
 def update_req(func):
     ''' a decorator that will update dhcpawn request
@@ -122,12 +127,13 @@ def update_req(func):
         db.session.commit()
         func(*args, **kwargs)
         if obj.errors:
+            obj.drequest.update_drequest(err_str=obj.errors,
+                                         status='Failed',
+                                         params=obj.data)
             return
-        # if isinstance(returned, dict) and returned.get('status', None) == 'error':
-            # return gen_resp(errors=returned['description'])
 
         if hasattr(obj, 'drequest'):
-            _logger.debug("Updating dRequest Object")
+            _logger.info("Updating dRequest Object")
             obj.drequest.update_drequest(drequest_type=obj.drequest_type,
                                          drequest_reply_url=obj.drequest_reply_url,
                                          drequest_result=json.dumps(obj.result),
@@ -156,19 +162,6 @@ def get_full_chain_tasks_list(top_async_result):
     else:
         return []
     return full_list
-
-def gen_drequest_in_db(func):
-    ''' decorator to actually add a new instance of
-    drequest to DB so that in POST/PUT/DELETE
-    its done and not in GET'''
-
-    def decorator(*args, **kwargs):
-        obj = args[0]
-        db.session.add(obj.drequest)
-        db.session.commit()
-        returned = func(*args, **kwargs)
-        return returned
-    return decorator
 
 def parse_ldap_entry(entry):
     """ when running ldap, if everything was ok,

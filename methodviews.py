@@ -7,7 +7,7 @@ from flask.views import MethodView
 from ipaddress import IPv4Address
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.exceptions import BadRequest
-from celery import group as celery_group
+from celery import group as celery_group, chain
 from celery.exceptions import CeleryError
 from cob import db
 
@@ -927,7 +927,7 @@ class MultipleAction(DhcpawnMethodView):
         --> incase one of the inputs is wrong ,validation fails and the entire request will fail
         - no ip is allocated.
         """
-        _logger.debug("multiple register")
+        _logger.debug(f"multiple register")
         self.drequest_type = "Multiple Registration"
         self.data = request.get_json(force=True)
         deploy = "True"
@@ -958,56 +958,36 @@ class MultipleAction(DhcpawnMethodView):
                     db.session.add(validated_host_dict[su][hst])
                     remove_hosts_on_fail.append(validated_host_dict[su][hst])
                     try:
-                        _logger.debug("Commiting host %s to DB" % validated_host_dict[su][hst].name)
                         db.session.commit()
                     except DhcpawnError as e:
                         _logger.error(e.__str__())
                         db.session.rollback()
                         continue
                     dtasks_group.append(Dtask(self.drequest.id))
-                    tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id,
-                                                                dtasks_group[-1].id))
-
+                    # res = Host.drequest_ldap_add(validated_host_dict[su][hst].id, dtasks_group[-1].id)
+                    tinput = {
+                        'hid':validated_host_dict[su][hst].id,
+                        'dtask_id':dtasks_group[-1].id
+                    }
+                    # tasks_group.append(task_host_ldap_add.s(validated_host_dict[su][hst].id, dtasks_group[-1].id))
+                    tasks_group.append(task_host_ldap_add.s(**tinput))
                     if isinstance(self.result, dict):
                         self.result.update({hst:validated_host_dict[su][hst].config()})
                     else:
                         self.result = {hst:validated_host_dict[su][hst].config()}
-                        _logger.debug("updating drequest result")
-
+                        # _logger.debug("updating drequest result")
             # send all ldap actions to celery
-            job = celery_group(tasks_group)
+            # job = celery_group(tasks_group)
+            job = chain(*tasks_group)
             try:
                 self.res = job.apply_async()
-                self.msg = "Registration to DB Finished. ldap async part is running. stay tuned.."
+                self.msg = f"Registration to DB Finished. ldap async part is running. stay tuned.. {self.res}"
             except CeleryError as e:
                 self.errors = e.__str__()
                 self.msg = "Registration failed ,please check the errors part"
                 clear_ips(remove_ips_on_fail)
                 clear_hosts(remove_hosts_on_fail)
                 return
-
-        else:
-            _logger.info("Registring entries only in DB ,no LDAP update")
-            # quick registration mode - simply writing all records to DB.
-            try:
-                validated_host_dict, _ = validate_data_before_registration(self.data)
-            except DhcpawnError as e:
-                _logger.error("Failed registration (%s)" % e.__str__())
-                self.errors = e.__str__()
-                self.msg = "Failed registration"
-                return
-            else:
-                for su in validated_host_dict:
-                    for hst in validated_host_dict[su]:
-                        db.session.add(validated_host_dict[su][hst])
-                        try:
-                            db.session.commit()
-                        except IntegrityError as e:
-                            if re.search("duplicate", e.__str__()):
-                                db.session.rollback()
-                                dup_description = re.search(r'Key \((.*)\).*already exists', e.__str__()).group(0)
-                                Duplicate(dup_description)
-                                _logger.error(f"DUPLICATION ERROR: {dup_description}")
 
     @gen_resp_deco
     @update_req
@@ -1034,25 +1014,29 @@ class MultipleAction(DhcpawnMethodView):
                 raise DhcpawnError('Failed hard delete (%s)' % e.__str__())
             else:
                 return
-
         try:
             validated_host_dict = validate_data_before_deletion(self.data)
         except DhcpawnError as e:
             self.errors = e.__str__()
+            self.msg = "Failed data validation in multiple delete"
+            _logger.info("HERE EXCEPTION")
             return
 
         tasks_group = []
         dtasks_group = []
-
-        for h in validated_host_dict:
+        for hst in validated_host_dict:
             dtasks_group.append(Dtask(self.drequest.id))
-            tasks_group.append(task_host_ldap_delete.s(validated_host_dict[h].id, dtasks_group[-1].id))
+            tinput = {
+                'hid':validated_host_dict[hst].id,
+                'dtask_id':dtasks_group[-1].id
+            }
+            tasks_group.append(task_host_ldap_delete.s(**tinput))
             if isinstance(self.result, dict):
-                self.result.update({h:validated_host_dict[h].config()})
+                self.result.update({hst:validated_host_dict[hst].config()})
             else:
-                self.result = {h:validated_host_dict[h].config()}
+                self.result = {hst:validated_host_dict[hst].config()}
 
-        job = celery_group(tasks_group)
+        job = chain(*tasks_group)
         try:
             self.res = job.apply_async()
             self.msg = 'Async deletion is running. stay tuned..'
@@ -1123,7 +1107,6 @@ def validate_data_before_registration(data):
         data = json.loads(data)
     for h in data.keys():
         hdata = data.get(h)
-        _logger.debug("validate %s: %s" % (h, hdata))
         try:
 
             # host, group, subnet, ip = single_input_validation(hdata)
@@ -1140,7 +1123,7 @@ def validate_data_before_registration(data):
             remove_hosts_on_fail.append(host)
             if subnet:
                 if ip == 'allocate':
-                    ip = alloc_single_ip(subnet, ip)
+                    ip = alloc_single_ip(subnet, 'allocate')
                 elif ip:
                     ip = alloc_single_ip(subnet, ip)
                 else:
@@ -1172,7 +1155,7 @@ def validate_data_before_deletion(data):
     for h in data.keys():
         hdata = data.get(h)
         try:
-            host = Host.single_input_validate_before_deletion(hdata)
+            host = Host.single_input_validate_before_deletion(**hdata)
         except DhcpawnError:
             raise
         else:

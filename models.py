@@ -7,14 +7,15 @@ from time import sleep
 
 from flask import current_app
 from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, ALREADY_EXISTS, \
-    LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT
+    LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN, LDAPError
 from ipaddress import IPv4Address, IPv4Network
 from sqlalchemy_utils import IPAddressType
 from sqlalchemy.exc import IntegrityError
 from cob import db
 
 from .ldap_utils import server_dn
-from .help_functions import _get_or_none, get_by_field, DhcpawnError, parse_ldap_entry
+from .help_functions import _get_or_none, get_by_field, parse_ldap_entry
+from .help_functions import DhcpawnError, MissingMandatoryArgsError, InputValidationError
 
 _logger = logbook.Logger(__name__)
 
@@ -64,47 +65,46 @@ class LDAPModel(db.Model):
             ldapcmd_args = SCOPE_SUBTREE
         else:
             raise DhcpawnError(f"Wrong command type given {cmd_type}")
-
         if not dn:
             dn = self.dn()
         if self.deployed:
             exc_type_list = []
             tries = 0
             e = None
-            while True:
-                tries += 1
-                if tries > 10:
-                    errmsg = f"Failed {ldapstr} on {dn} even after {tries} retries {exc_type_list}"
-                    raise DhcpawnError(errmsg)
-                try:
-                    if ldapcmd_args:
-                        res = ldapcmd(dn, ldapcmd_args)
-                        if cmd_type == 'get':
-                            if parse:
-                                return parse_ldap_entry(res)
-                            else:
-                                return res
-                        else:
-                            ldapcmd(dn)
-                        break
-                except (TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT)  as e:
-                    _logger.debug(e.__str__())
-                    exc_type_list.append(type(e).__name__)
-                except ldap.SERVER_DOWN as e:
-                    _logger.debug(e.__str__())
-                    exc_type_list.append(type(e).__name__)
-                    sleep(1)
+            try:
+                if ldapcmd_args is None:
+                    res = ldapcmd(dn)
+                else:
+                    res = ldapcmd(dn, ldapcmd_args)
+
+                if cmd_type == 'get' and parse:
+                    return parse_ldap_entry(res)
+                return res
+
+            except LDAPError as e:
+                _logger.debug(e.__str__())
+                raise
+            else:
+                return res
 
     def ldap_add(self):
-        raise RuntimeError("prevent ldap_add from running")
-        self.ldap_retry(cmd_type='add', dn=self.dn())
+        #raise DhcpawnError("prevent ldap_add from running")
+        try:
+            self.ldap_retry(cmd_type='add', dn=self.dn())
+        except LDAPError:
+            raise
+
+    def ldap_delete(self):
+        # raise RuntimeError("prevent ldap_delete from running")
+        try:
+            self.ldap_retry(cmd_type='delete', dn=self.dn())
+        except LDAPError:
+            raise
 
     def ldap_get(self, dn=None, parse=False):
         return self.ldap_retry(cmd_type='get', dn=dn, parse=parse)
 
-    def ldap_delete(self, dn=None):
-        raise RuntimeError("prevent ldap_delete from running")
-        self.ldap_retry(cmd_type='delete', dn=dn)
+
 
     def ldap_modify(self, dn=None):
         raise RuntimeError("prevent ldap_modify from running")
@@ -214,7 +214,7 @@ class Host(LDAPModel):
                 # both hostname and mac exist in DB and belong to the same entry.
                 return host_by_hostname
             else:
-                raise DhcpawnError("hostname %s and mac %s belong to two different entries in DB " % (hostname, mac) )
+                raise InputValidationError("hostname %s and mac %s belong to two different entries in DB " % (hostname, mac) )
         elif not host_by_hostname and not host_by_mac:
             # no record in DB with this hostname or mac
             return None
@@ -233,7 +233,7 @@ class Host(LDAPModel):
         raise DhcpawnError("Found duplication")
 
     @staticmethod
-    def host_mac_group_validation(**kwargs):
+    def mac_group_validation(**kwargs):
         try:
             host = Host.hostname_mac_coupling_check(**kwargs)
         except DhcpawnError:
@@ -289,13 +289,12 @@ class Host(LDAPModel):
         ''' validate before registration, get single host creation inputs:
         hostname, mac, group, subnet, ip, and make sure its a valid request'''
         if any(key not in kwargs for key in ['hostname', 'mac', 'group']):
-            raise DhcpawnError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
+            raise MissingMandatoryArgsError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
         try:
-            host, group = Host.host_mac_group_validation(*args,**kwargs)
+            host, group = Host.mac_group_validation(*args,**kwargs)
         except DhcpawnError:
             raise
         else:
-            _logger.debug("%s %s" % (host, group))
             try:
                 ip, subnet = Host.ip_subnet_validation(**kwargs)
             except DhcpawnError:
@@ -370,12 +369,12 @@ class Host(LDAPModel):
         return h.id
 
     @staticmethod
-    def single_input_validate_before_deletion(kwargs):
+    def single_input_validate_before_deletion(*args, **kwargs):
         ''' simply make sure hostname really has the mac we got and
         belong to the provided group'''
 
         try:
-            host, _ = Host.host_mac_group_validation(**kwargs)
+            host, _ = Host.mac_group_validation(**kwargs)
         except DhcpawnError:
             raise
 
@@ -399,7 +398,7 @@ class Host(LDAPModel):
         ldap_ip = ldap_entry[self.name]['ip']
         if not ldap_mac == self.mac:
             raise DhcpawnError('%s- DB-LDAP validation failed - mac addresses are different (DB: %s , LDAP: %s)' % (self.name, self.mac, ldap_mac))
-        if not ldap_ip == self.ip:
+        if not ldap_ip == self.ip.address.compressed:
             raise DhcpawnError('%s- DB-LDAP validation failed - ip addresses are different (DB: %s , LDAP: %s)' % (self.name, self.ip.address, ldap_ip))
 
 
@@ -461,6 +460,80 @@ class Host(LDAPModel):
         db.session.delete(self)
         db.session.commit()
 
+    @staticmethod
+    def drequest_ldap_add(hid, dtask_id, current_tid):
+        ''' after creating new host in db
+        run async task to udpate LDAP
+        hid = host id
+        dreq_id = the related dhcpawn request id
+        '''
+        # from pudb.remote import set_trace;set_trace(term_size=(160,40), host='0.0.0.0', port=dtask_id)
+        # current_tid = self.request.id # task_id of the task we are in
+
+        host = Host.query.get(hid)
+        dtask = Dtask.query.get(dtask_id)
+        err_str = ''
+        try:
+            host.ldap_add()
+        except LDAPError:
+            dtask.update(
+                status= 'failed',
+                desc= 'ldap add host %s' % host.name,
+                celery_task_id= current_tid
+            )
+            host.delete()
+            raise
+        else:
+        # _logger.debug(f"Success {dtask_id} for host {host.name}")
+
+            dtask.update(
+                status= 'succeeded',
+                desc= 'ldap add host %s' % host.name,
+                celery_task_id= current_tid
+            )
+        finally:
+            dreq = Req.query.get(dtask.dreq_id)
+            dreq.refresh_status()
+
+    @staticmethod
+    def drequest_ldap_delete(hid, dtask_id, current_tid):
+        ''' after creating new host in db
+        run async task to udpate LDAP
+        hid = host id
+        dreq_id = the related dhcpawn request id
+        '''
+        # from pudb.remote import set_trace;set_trace(term_size=(160,40), host='0.0.0.0', port=dtask_id)
+        # current_tid = self.request.id # task_id of the task we are in
+
+        host = Host.query.get(hid)
+        dtask = Dtask.query.get(dtask_id)
+        err_str = ''
+
+        try:
+            _logger.info(f"deleting host {host.name} from ldap")
+            host.ldap_delete()
+        except LDAPError:
+            import pudb;pudb.set_trace()
+            dtask.update(
+                status= 'failed',
+                desc= 'ldap delete host %s' % host.name,
+                celery_task_id= current_tid
+            )
+        else:
+        # _logger.debug(f"Success {dtask_id} for host {host.name}")
+            _logger.info('Host (%s) was also be deleted from DB', host.name)
+            if host.ip:
+                db.session.delete(host.ip)
+            db.session.delete(host)
+            db.session.commit()
+            dtask.update(
+                status= 'succeeded',
+                desc= 'ldap+DB delete host %s' % host.name,
+                celery_task_id= current_tid
+            )
+        finally:
+            dreq = Req.query.get(dtask.dreq_id)
+            dreq.refresh_status()
 
 class Group(LDAPModel):
     id = db.Column(db.Integer, primary_key=True)
@@ -1046,12 +1119,28 @@ class Req(db.Model):
         self.celery_tasks_list = json.dumps([])
 
     def config(self):
+        dtasks_category_dict = {'failed': [],
+                                'running': [],
+                                'succeeded': [],
+        }
+        for dt in self.dtasks.all():
+            # succeeded, failed, running
+            if dt.status == 'succeeded':
+                dtasks_category_dict['succeeded'].append(dt.config())
+            elif dt.status == 'failed':
+                dtasks_category_dict['failed'].append(dt.config())
+            elif dt.status == 'running':
+                dtasks_category_dict['running'].append(dt.config())
+            else:
+                _logger.error(f"Found a dtask with unknown state {dt.state}")
+
         return  dict(id=self.id,
             status=self.status,
             request_type=self.request_type,
             drequest_result=json.loads(self.drequest_result) if self.drequest_result else None,
             params=json.loads(self.params),
-            dtasks=[dtask.config() for dtask in self.dtasks.all()],
+            dtasks_amount = len(self.dtasks.all()),
+            dtasks=dtasks_category_dict,
             err_str = self.err_str,
             reply_url = self.reply_url,
             replied=self.replied,
@@ -1066,8 +1155,9 @@ class Req(db.Model):
         num_failed = 0
         num_passed = 0
         for dtask in self.dtasks.all():
-            _logger.debug("task %s status %s" % (dtask.id, dtask.status))
-            if self.status != 'Failed' and dtask.status == 'failed':
+            # _logger.debug(f"task {dtask.id} status {dtask.status}")
+            # if self.status != 'Failed' and dtask.status == 'failed':
+            if dtask.status == 'failed':
                 # self.status = 'Failed'
                 failed = True
                 num_failed += 1
@@ -1076,11 +1166,15 @@ class Req(db.Model):
             elif dtask.status == 'running':
                 running = True
                 num_running += 1
-            else:
+            elif dtask.status == 'succeeded':
                 num_passed += 1
+            else:
+                self.status = 'Bug ???'
+                self.commit()
+                return "Buggggg"
 
 
-        _logger.debug('PASSED: %s ; RUNNING: %s ; FAILED: %s' % (num_passed, num_running, num_failed))
+        _logger.debug(f"PASSED: {num_passed} ; RUNNING: {num_running} ; FAILED: {num_failed}")
         if failed:
             self.status = 'Failed'
             self.commit()
@@ -1089,6 +1183,7 @@ class Req(db.Model):
 
         if self.status != 'Failed':
             self.status = 'Done'
+            _logger.info("Tasks Done!!!!")
             self.commit()
 
         self.clean_on_failure()
@@ -1114,9 +1209,6 @@ class Req(db.Model):
             db.session.delete(h_inst)
             db.session.commit()
 
-
-
-
     def postreply(self):
         '''method to post drequest config to the reply_url
         when drequest finished (either failed or succeeded)'''
@@ -1128,7 +1220,7 @@ class Req(db.Model):
             self.commit()
 
     def update_drequest(self, drequest_type=None, drequest_reply_url=None, drequest_result=None,
-                        params=None, tasks_list=None, tasks_count=None):
+                        params=None, tasks_list=None, tasks_count=None, err_str=None, status=None):
 
         if params:
             self.params = json.dumps(params)
@@ -1142,6 +1234,10 @@ class Req(db.Model):
             self.drequest_result = drequest_result
         if tasks_count:
             self.celery_tasks_count = tasks_count
+        if status:
+            self.status = status
+        if err_str:
+            self.err_str = err_str
 
         self.commit()
 
@@ -1164,7 +1260,6 @@ class Dtask(db.Model):
         self.commit()
 
     def commit(self):
-
         db.session.add(self)
         db.session.commit()
 
