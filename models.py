@@ -1592,9 +1592,9 @@ class Req(db.Model):
             raise DhcpawnError(f"dRequest {self.id} still running")
 
         if not self.replied and self.reply_url:
-            url = '%s%s/' % (self.reply_url, self.id)
-            _logger.info("Post reply to url %s" % url)
-            requests.post(url, data=self.config())
+            # url = '%s%s/' % (self.reply_url, self.id)
+            _logger.info("Post reply to url %s" % self.reply_url)
+            requests.post(self.reply_url, data=self.config())
             self.replied = True
             self.commit()
             # self.refresh_status()
