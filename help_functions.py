@@ -17,7 +17,8 @@ _logger = logbook.Logger(__name__)
 
 __all__ = ['DhcpawnError', 'DuplicateError', 'MissingMandatoryArgsError',
            'ValidationError', 'InputValidationError', 'DoNothingRecordExists',
-           'BadSubnetName', 'IPAlreadyExists', 'ConflictingParamsError', 'DoNothingRecordNotInDB']
+           'BadSubnetName', 'IPAlreadyExists', 'ConflictingParamsError',
+           'DoNothingRecordNotInDB', 'SyncError']
 
 class DhcpawnError(Exception):
     pass
@@ -53,6 +54,10 @@ class DoNothingRecordNotInDB(DoNothing):
 
 class ConflictingParamsError(DhcpawnError):
     '''when trying to delete a host, request params should be identical to what is in DB '''
+    pass
+
+class SyncError(DhcpawnError):
+    '''DB - LDAP related error '''
     pass
 
 def get_by_id(model, model_id):

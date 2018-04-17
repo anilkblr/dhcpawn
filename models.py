@@ -243,7 +243,6 @@ class Host(LDAPModel):
 
         if any(key not in kwargs for key in ['hostname', 'mac', 'group', 'subnet', 'ip']):
             raise ValidationError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
-
         try:
             mac = Host._unique_mac(kwargs.get('mac'))
             group = Group.validate_by_name(kwargs.get('group'))
@@ -252,17 +251,18 @@ class Host(LDAPModel):
             raise
         else:
             if subnet or ip:
-                if ip == '':
+                if ip == '' or ip is None:
                     ip = 'allocate'
                     host = Host(name=kwargs.get('hostname'),
                                 mac=mac,
                                 group_id=group.id,
                                 ip=Subnet.alloc_single_ip(subnet, ip)
                     )
+
             else:
                 host = Host(name=kwargs.get('hostname'),
                             mac=mac,
-                            group_id=group.id,
+                            group=group,
                 )
             return host
 
@@ -292,7 +292,10 @@ class Host(LDAPModel):
         '''
         rsubnet = kwargs.get('subnet')
         rip = kwargs.get('ip')
-        if rsubnet: # we should always have subnet in request
+        if rsubnet is None and rip is None:
+            return None, None
+
+        if rsubnet:
             try:
                 subnet = Subnet.validate_by_name(rsubnet)
             except ValidationError as e:
@@ -308,45 +311,60 @@ class Host(LDAPModel):
 
     @staticmethod
     def _compare_existing_to_request(**kwargs):
+        new_mac = ''
+        new_group = ''
+        new_ip = ''
 
         host = Host.query.filter_by(name=kwargs.get('hostname')).first()
         if Host._check_identical(host, **kwargs):
             raise DoNothingRecordExists
 
         if not host.mac == kwargs.get('mac') and Host._unique_mac(kwargs.get('mac')):
-            host.mac = kwargs.get('mac') # update db with the new mac
+            new_mac = kwargs.get('mac')
+            # host.mac = kwargs.get('mac') # update db with the new mac
+
+
         if not host.group == kwargs.get('group'):
-            _logger.info(f"Updating group for host {host}: {host.group} --> {kwargs.get('group')}")
-            host.group = group
-            # group = Group.validate_by_name(kwargs.get('group'))
+            _logger.debug(f"Updating group for host {host}: {host.group} --> {kwargs.get('group')}")
+            new_group = Group.validate_by_name(kwargs.get('group'))
+            # host.group = Group.validate_by_name(kwargs.get('group'))
+
         if not host.subnet() == kwargs.get('subnet') or (not host.ip == kwargs.get('ip')):
             try:
                 subnet, ip = Host._ip_subnet_validation(**kwargs)
             except BadSubnetName as e:
                 raise ValidationError(e.__str__())
             except IPAlreadyExists as e:
-                if host.ip == kwargs.get('ip'):
+                if host.ip.address.compressed == kwargs.get('ip'):
                     pass
-                raise ValidationError(e.__str__())
-            else:
-                if not host.subnet() == kwargs.get('subnet') and host.ip:
-                    # subnet changed , delete current ip from db and allocate
-                    # new one in the new subnet
-                    db.session.delete(host.ip)
-                if ip == '':
-                    host.ip = Subnet.alloc_single_ip(subnet, 'allocate')
                 else:
-                    host.ip = Subnet.alloc_single_ip(subnet, ip)
+                    raise ValidationError(e.__str__())
+            finally:
+                if not host.subnet() == kwargs.get('subnet'):
+                    if host.ip:
+                        # subnet changed , delete current ip from db and allocate
+                        # new one in the new subnet
+                        db.session.delete(host.ip)
+                    if kwargs.get('subnet') is None:
+                        new_ip = None
+                    else:
+                        wanted_subnet = Subnet.validate_by_name(kwargs.get('subnet'))
+                        new_ip = Subnet.alloc_single_ip(wanted_subnet, 'allocate')
+                    # host.ip = Subnet.alloc_single_ip(wanted_subnet, 'allocate')
+                # if ip == '':
+                #     host.ip = Subnet.alloc_single_ip(subnet, 'allocate')
+                # else:
+                #     host.ip = Subnet.alloc_single_ip(subnet, ip)
 
-        return host
+        return new_mac, new_group, new_ip
 
     @staticmethod
     def _check_identical(host, **kwargs):
-
         if (host.name == kwargs.get('hostname') and
             host.mac == kwargs.get('mac') and
             host.group == kwargs.get('group') and
-            host.subnet() == kwargs.get('subnet') and
+            (host.subnet() == kwargs.get('subnet') or
+             (host.subnet() is None and kwargs.get('subnet') == 'None')) and
             host.ip == kwargs.get('ip')):
             return True
 
@@ -722,8 +740,40 @@ class Host(LDAPModel):
             )
         new = True
         try:
-            if Host.query.filter_by(name=kwargs['hdata'].get('hostname')).first():
-                host = Host.validate_existing_host_before_registration(**kwargs['hdata'])
+            host = Host.query.filter_by(name=kwargs['hdata'].get('hostname')).first()
+            if host:
+                new_mac, new_group, new_ip = Host.validate_existing_host_before_registration(**kwargs['hdata'])
+                try:
+                    host.ldap_delete()
+                except LDAPError as e:
+                    if isinstance(e, NO_SUCH_OBJECT):
+                        pass
+                    else:
+                        dtask.update(
+                            status= 'failed',
+                            desc= f"ldap_delete failed. host not updated",
+                        )
+                        return
+                try:
+                    host.mac = new_mac if new_mac else host.mac
+                    host.group = new_group if new_group else host.group
+                    host.ip = new_ip if new_ip else host.ip
+                except IntegrityError:
+                    # db update failed - rollback and ldap_Add old record
+                    db.session.rollback()
+                    host.ldap_add()
+                else:
+                    # update ldap with new host record
+                    try:
+                        host.ldap_add()
+                    except LDAPError as e:
+                        _logger.error(f"Failed updating LDAP with new host details {e.__str__()}")
+                        db.session.rollback()
+                        host = Host.query.filter_by(name=kwargs['hdata'].get('hostname')).first()
+                        host.ldap_add()
+                    else:
+                        db.session.add(host)
+                        db.session.commit()
                 new = False
             else:
                 host = Host.validate_new_host_before_registration(**kwargs['hdata'])
@@ -740,7 +790,7 @@ class Host(LDAPModel):
             host = Host.query.filter_by(name=kwargs.get('hdata').get('hostname')).first()
             dtask.update(
                 status= 'succeeded',
-                desc= f"Host with these params already exists in DB - nothing to do",
+                desc= f"Host with these params already exists in DB - nothing to do in DB",
                 result= json.dumps({kwargs.get('hkey'):host.config()})
             )
         else:
@@ -785,7 +835,7 @@ class Host(LDAPModel):
                         )
             else: # host already in DB
                 dtask.update(status='succeeded',
-                             desc=f"Host {host} already in DB. just updated it",
+                             desc=f"Host {host} already in DB. just updated LDAP",
                              result= json.dumps({kwargs.get('hkey'):host.config()})
                              )
                 # if subnet:
@@ -927,11 +977,16 @@ class Group(LDAPModel):
         :return: group dict with amount, "only in ldap", "only in db" and content diffs
         """
 
-        _logger.debug("Inside get_sync_status for group {self.name}")
-
+        _logger.debug(f"Inside get_sync_status for group {self.name}")
         gr_diff = {self.name: {'group is synced':True, 'info':{}}}
         info = gr_diff[self.name]['info']
-        ldap_records = self.ldap_get()[1:]
+        try:
+            ldap_records = self.ldap_get()[1:]
+        except NO_SUCH_OBJECT:
+            _logger.error(f"Group {self} in DB but not in LDAP ???")
+            # gr_diff[self.name]['group is synced'] = False
+            # return gr_diff
+            raise
         db_records = self.hosts.all()
 
         # amount
@@ -956,7 +1011,7 @@ class Group(LDAPModel):
         for h in db_records:
             try:
                 h.ldap_get()
-            except DhcpawnError:
+            except NO_SUCH_OBJECT:
                 _logger.debug(f"Entry exists only in DB {h.name}")
                 info.setdefault('only in db', [])
                 info['only in db'].append(h.name)
@@ -966,6 +1021,7 @@ class Group(LDAPModel):
         if gr_stat:
             info.setdefault('content',gr_stat)
 
+        # Sum up all diff types if exist
         if info.get('amount') or info.get('only in db') or info.get('only in ldap') or info.get('content'):
             _logger.notice("diffs exist per group %s" %  self.name)
 
@@ -973,14 +1029,34 @@ class Group(LDAPModel):
 
         return gr_diff
 
+    @staticmethod
+    def get_sync_stat_for_all_groups():
+        groups = {}
+        returned = {'synced':{}, 'not synced':{}}
+        for g in Group.query.all():
+            try:
+                groups.update(g.get_sync_stat())
+            except NO_SUCH_OBJECT as e:
+                _logger.info(f"Not calculating diffs per group {g}")
+                groups.update({g.name: {'info': f"Looks like this group is not in LDAP but can be found in DB ({e.__str__()})",
+                                        'group is synced': False}})
+                continue
+
+        for g in groups:
+            if groups[g]['group is synced']:
+                returned['synced'].update({g:groups[g]})
+            else:
+                returned['not synced'].update({g:groups[g]})
+        return returned
+
     def group_sync(self, **kwargs):
 
+        d = {self.name: {'group is synced':True, 'info':{}}}
         try:
             d = self.get_sync_stat()
-        except DhcpawnError:
-            raise
-
-
+        except LDAPError as e:
+            d[self.name]['group is synced'] = False
+            pass
         for g in d:
             if d[g]['group is synced']:
                 return d, None
@@ -1006,7 +1082,7 @@ class Group(LDAPModel):
                         host.ldap_add()
                         stat_dict[grp]['added to ldap'].append(host2sync)
 
-                if info.get('only in ldap') and kwargs.get('sync_delete_ldap_entries'):
+                if info.get('only in ldap') and kwargs.get('sync_delete_ldap_entries', False):
                     stat_dict[grp].setdefault('deleted from ldap', [])
                     for host2sync in info['only in ldap']:
                         _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % host2sync)
@@ -1038,12 +1114,12 @@ class Group(LDAPModel):
         hosts_diff_list = []
 
         for hst in Host.query.filter_by(group=self):
-
             db_entry = hst.config()
             try:
                 ldap_entry = hst.ldap_get(parse=True)
-            except DhcpawnError:
-                continue
+            except NO_SUCH_OBJECT:
+                ldap_entry = None
+                pass
 
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
@@ -1096,7 +1172,26 @@ class Group(LDAPModel):
             _logger.debug("Elaborated diff pairs: %s" % df)
             return False, df
 
+    @staticmethod
+    def sync_all_groups():
+        # run sync on all groups
+        stat = dict()
+        post_sync = dict([('groups', {})])
 
+        for gr in Group.query.all():
+            try:
+                tmpd, host_stat_dict = gr.group_sync()
+                stat.update(tmpd)
+                if host_stat_dict:
+                    post_sync['groups'].update(host_stat_dict)
+            except DhcpawnError:
+                pass
+
+        if post_sync['groups']:
+            return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
+                    'post sync': {k:v for k,v in post_sync.items() if v} }
+        else:
+            return stat
 
 class Subnet(LDAPModel):
     id = db.Column(db.Integer, primary_key=True)

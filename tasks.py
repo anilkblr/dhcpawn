@@ -16,7 +16,7 @@ __all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task
 if get_project().config.get('sync_config'):
     sync_every = get_project().config['sync_config']['group_sync_every']
     stat_every = get_project().config['sync_config']['sync_stat_every']
-    sync_delete_ldap_entries = get_project().config['sync_config'].get('sync_delete_ldap_entries', os.getenv('DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
+    sync_delete_ldap_entries = get_project().config['sync_config'].get('sync_delete_ldap_entries', os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
 else:
     sync_every = 600
     stat_every = 300
@@ -24,38 +24,58 @@ else:
 
 _logger = logbook.Logger(__name__)
 
-# @task(every=stat_every, use_app_context=True)
+@task(every=stat_every, use_app_context=True)
 def task_get_sync_stat():
     # get sync stat for all groups
-    stat = dict()
-    for gr in Group.query.all():
-        try:
-            stat.update(gr.get_sync_stat())
-        except DhcpawnError:
-            pass
 
-    return stat
+    return Group.get_sync_stat_for_all_groups()
+    # stat = dict()
+    # for gr in Group.query.all():
+    #     try:
+    #         stat.update(gr.get_sync_stat())
+    #     except DhcpawnError:
+    #         pass
+    # groups = {}
+    # returned = {'synced':{}, 'not synced':{}}
+    # for g in Group.query.all():
+    #     try:
+    #         groups.update(g.get_sync_stat())
+    #     except NO_SUCH_OBJECT as e:
+    #         _logger.info(f"Not calculating diffs per group {g}")
+    #         groups.update({g.name: {'info': f"Looks like this group is not in LDAP but can be found in DB ({e.__str__()})",
+    #                                 'group is synced': False}})
+    #         continue
 
-# @task(every=sync_every, use_app_context=True)
+    # for g in groups:
+    #     if groups[g]['group is synced']:
+    #         returned['synced'].update({g:groups[g]})
+    #     else:
+    #         returned['not synced'].update({g:groups[g]})
+    # return returned
+
+    # return stat
+
+@task(every=sync_every, use_app_context=True)
 def task_sync():
     # run sync on all groups
-    stat = dict()
-    post_sync = dict([('groups', {})])
+    return Group.sync_all_groups()
+    # stat = dict()
+    # post_sync = dict([('groups', {})])
 
-    for gr in Group.query.all():
-        try:
-            tmpd, host_stat_dict = gr.group_sync(sync_delete_ldap_entries=sync_delete_ldap_entries)
-            stat.update(tmpd)
-            if host_stat_dict:
-                post_sync['groups'].update(host_stat_dict)
-        except DhcpawnError:
-            pass
+    # for gr in Group.query.all():
+    #     try:
+    #         tmpd, host_stat_dict = gr.group_sync()
+    #         stat.update(tmpd)
+    #         if host_stat_dict:
+    #             post_sync['groups'].update(host_stat_dict)
+    #     except DhcpawnError:
+    #         pass
 
-    if post_sync['groups']:
-        return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
-                'post sync': {k:v for k,v in post_sync.items() if v} }
-    else:
-        return stat
+    # if post_sync['groups']:
+    #     return {'pre sync': {k:v for k,v in stat.items() if not v['group is synced']},
+    #             'post sync': {k:v for k,v in post_sync.items() if v} }
+    # else:
+    #     return stat
 
 @task(bind=True)
 def task_get_group_sync_stat(self, group_name, dtask_id):

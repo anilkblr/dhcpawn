@@ -941,7 +941,8 @@ class MultipleAction(DhcpawnMethodView):
             del self.data['reply_url']
         if 'sync' in self.data and self.data.get('sync') == 'true':
             sync = True
-            self.drequest_type = "Sync Multiple Registration"
+            self.drequest.request_type = "Sync Multiple Registration"
+            del self.data['sync']
         if deploy.lower()=="true":
             # _logger.debug("DEPLOY=%s" % deploy)
             # _logger.info(f"Data size: {len(self.data)}")
@@ -965,7 +966,6 @@ class MultipleAction(DhcpawnMethodView):
 
             if sync:
                 self.drequest.refresh_status()
-                from time import sleep
                 self.drequest.postreply()
                 self.msg = 'The Sync Way'
             else:
@@ -991,14 +991,13 @@ class MultipleAction(DhcpawnMethodView):
             del self.data['deploy']
         if 'reply_url' in self.data:
             self.drequest.update_drequest(drequest_reply_url = self.data.get('reply_url'))
-            # self.drequest_reply_url = self.data.get('reply_url')
             del self.data['reply_url']
-        if 'hard' in self.data:
-            del self.data['hard']
-            hard = True
+        # if 'hard' in self.data:
+            # del self.data['hard']
+            # hard = True
         if 'sync' in self.data and self.data.get('sync') == 'true':
             sync = True
-            self.drequest_type = "Sync Multiple Deletion"
+            self.drequest.request_type = "Sync Multiple Deletion"
             del self.data['sync']
 
         dtasks_group = []
@@ -1022,7 +1021,6 @@ class MultipleAction(DhcpawnMethodView):
         else:
 
             tinput = {'dreq_id': self.drequest.id}
-            # tasks_group.append(task_send_postreply.s(**tinput))
             delete_chain = chain(*tasks_group)
             refresh_request_job = task_update_drequest.s(**tinput)
             post_reply_job = task_send_postreply.s(**tinput)
@@ -1032,49 +1030,49 @@ class MultipleAction(DhcpawnMethodView):
             self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {self.res}"
 
 #### HELP FUNCTIONS
-def hard_delete(data):
-    """ for cases we have dirty data, i.e hostnames in ldap but not in DB,
-    the regular validate before delete wont work"""
-    for h in data:
+# def hard_delete(data):
+#     """ for cases we have dirty data, i.e hostnames in ldap but not in DB,
+#     the regular validate before delete wont work"""
+#     for h in data:
 
-        name = data[h]['hostname']
-        mac = data[h]['mac']
-        group = data[h]['group']
-        _hard_delete_by_name(name, group)
-        _hard_delete_by_mac(mac)
+#         name = data[h]['hostname']
+#         mac = data[h]['mac']
+#         group = data[h]['group']
+#         _hard_delete_by_name(name, group)
+#         _hard_delete_by_mac(mac)
 
-def _hard_delete_by_name(name, group):
-    try:
-        host = Host.query.filter_by(name=name).first()
-        # _logger.debug("LDAP hard delete by name %s" % host.config())
-        if host == None:
-            raise ValueError
-    except ValueError:
-        host = Host(name=name,
-                    group = Group.validate_by_name(group),
-                    group_id = Group.validate_by_name(group).id,
-                    deployed=True)
-    finally:
-        try:
-            host.ldap_delete()
-            _logger.info("LDAP hard delete %s" % host.dn())
-            db.session.delete(host)
-            db.session.commit()
-        except DhcpawnError as e:
-            _logger.warning(f"Failed hard delete for {name} ({e.__str__()})")
-            db.session.rollback()
+# def _hard_delete_by_name(name, group):
+#     try:
+#         host = Host.query.filter_by(name=name).first()
+#         # _logger.debug("LDAP hard delete by name %s" % host.config())
+#         if host == None:
+#             raise ValueError
+#     except ValueError:
+#         host = Host(name=name,
+#                     group = Group.validate_by_name(group),
+#                     group_id = Group.validate_by_name(group).id,
+#                     deployed=True)
+#     finally:
+#         try:
+#             host.ldap_delete()
+#             _logger.info("LDAP hard delete %s" % host.dn())
+#             db.session.delete(host)
+#             db.session.commit()
+#         except DhcpawnError as e:
+#             _logger.warning(f"Failed hard delete for {name} ({e.__str__()})")
+#             db.session.rollback()
 
 
-def _hard_delete_by_mac(mac):
-    host = Host.query.filter_by(mac=mac).first()
-    try:
-        _logger.debug("DB hard delete by mac %s" % host.config())
-        host.ldap_delete()
-    except DhcpawnError:
-        _logger.error(f"Failed ldap delete during hard_delete_by_mac {mac}")
-    else:
-        db.session.delete(host)
-        db.session.commit()
+# def _hard_delete_by_mac(mac):
+#     host = Host.query.filter_by(mac=mac).first()
+#     try:
+#         _logger.debug("DB hard delete by mac %s" % host.config())
+#         host.ldap_delete()
+#     except DhcpawnError:
+#         _logger.error(f"Failed ldap delete during hard_delete_by_mac {mac}")
+#     else:
+#         db.session.delete(host)
+#         db.session.commit()
 
 def validate_data_before_registration(data):
     """

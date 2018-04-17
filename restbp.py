@@ -1,6 +1,7 @@
 # cob: type=blueprint mountpoint=/rest
 import logbook
 import json
+from ldap import LDAPError, NO_SUCH_OBJECT
 
 from flask import Blueprint, jsonify, request
 from cob import db
@@ -116,13 +117,13 @@ def deploy_server():
 
 @api.route('/get_sync_stat/')
 def gss():
-    groups = {}
-    for g in Group.query.all():
-        groups.update(g.get_sync_stat())
+    return jsonify(Group.get_sync_stat_for_all_groups())
 
-    return jsonify(groups)
+@api.route('/sync_all_groups/')
+def sync_all_groups():
+    return jsonify(Group.sync_all_groups())
 
-###
+### Deploy help functions
 def deploy_groups(skeleton):
     _logger.info("Deploying Groups to DB")
     for gr in skeleton['groups']:
