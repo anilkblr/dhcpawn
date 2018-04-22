@@ -2,12 +2,9 @@
 import logbook
 import json
 import requests
-import ldap
-from time import sleep
 
 from flask import current_app
-from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, ALREADY_EXISTS, \
-    LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN, LDAPError
+from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, NO_SUCH_OBJECT, LDAPError
 from ipaddress import IPv4Address, IPv4Network
 from sqlalchemy_utils import IPAddressType
 from sqlalchemy.exc import IntegrityError
@@ -15,7 +12,7 @@ from cob import db
 
 from .ldap_utils import server_dn
 from .help_functions import _get_or_none, get_by_field, parse_ldap_entry
-from .help_functions import *
+from .help_functions import DhcpawnError, DoNothingRecordNotInDB, ValidationError, ConflictingParamsError, BadSubnetName, IPAlreadyExists, DoNothingRecordExists, InputValidationError, DuplicateError
 
 _logger = logbook.Logger(__name__)
 
@@ -76,8 +73,6 @@ class LDAPModel(db.Model):
         if not dn:
             dn = self.dn()
         if self.deployed:
-            exc_type_list = []
-            tries = 0
             e = None
             try:
                 if ldapcmd_args is None:
@@ -90,7 +85,7 @@ class LDAPModel(db.Model):
                 return res
 
             except LDAPError as e:
-                _logger.debug(e.__str__())
+                _logger.debug(f"{ldapstr}: {e.__str__()}")
                 raise
             else:
                 return res
@@ -331,7 +326,7 @@ class Host(LDAPModel):
 
         if not host.subnet() == kwargs.get('subnet') or (not host.ip == kwargs.get('ip')):
             try:
-                subnet, ip = Host._ip_subnet_validation(**kwargs)
+                Host._ip_subnet_validation(**kwargs)
             except BadSubnetName as e:
                 raise ValidationError(e.__str__())
             except IPAlreadyExists as e:
@@ -419,85 +414,6 @@ class Host(LDAPModel):
             raise
         return host, group
 
-    @staticmethod
-    def ip_subnet_validation(**kwargs):
-        req_subnet = kwargs.get('subnet')
-        req_ip = kwargs.get('ip')
-        h = Host.get_by_hostname(kwargs.get('hostname'))
-        if host:
-        # first check if we already have the host in DB with
-        # the required ip
-            if host.ip:
-                if host.ip.address.commpressed == req_ip:
-                    ip = host.ip
-
-                    if req_subnet:
-                        subnet = Subnet.validate_by_name(req_subnet)
-                else:
-                    subnet = IP.get_subnet(req_ip)
-            return ip, subnet
-
-        if req_subnet and req_ip: # TODO verify that ip in subnet and not taken
-            try:
-                IP.is_ip_taken(req_ip)
-            except ValidationError:
-                raise
-            else:
-                try:
-                    if IP.ip_in_subnet(req_ip, req_subnet):
-                        ip = req_ip
-                        subnet = Subnet.validate_by_name(req_subnet)
-                    else:
-                        raise ValidationError("IP %s does not belong to subnet %s" % (req_ip, req_subnet))
-                except DhcpawnError:
-                    raise
-        elif req_subnet and not req_ip: # TODO just verify subnet and ip will be allocated
-            try:
-                subnet = Subnet.validate_by_name(req_subnet)
-            except ValidationError:
-                raise
-            else:
-                ip = "allocate"
-        elif not req_subnet and req_ip: # TODO check if ip taken and if not ,calulate subnet and allocate
-            try:
-                IP.is_ip_taken(req_ip)
-            except ValidationError:
-                raise
-            else:
-                ip = req_ip
-                subnet = IP.get_subnet(req_ip)
-        else:
-            subnet = None
-            ip = None
-
-        return ip, subnet
-
-    # @staticmethod
-    # def single_input_validate_before_registration(*args, **kwargs):
-    #     ''' validate before registration, get single host creation inputs:
-    #     hostname, mac, group, subnet, ip, and make sure its a valid request'''
-    #     if any(key not in kwargs for key in ['hostname', 'mac', 'group']):
-    #         raise ValidationError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
-
-    #     # trying to look for an existing host with same data
-    #     # try:
-    #     #     if Host.look_for_existing_host(**kwargs):
-    #     #         raise DoNothingRecordExists
-    #     # except DoNothingRecordExists:
-    #     #     raise
-    #     # except ValidationError:
-    #     #     raise
-
-    #     try:
-    #         host, group = Host.mac_group_validation(*args,**kwargs)
-    #     except ValidationError:
-    #         raise
-    #     else:
-    #         try:
-    #             ip, subnet = Host.ip_subnet_validation(*args, **kwargs)
-    #         except DhcpawnError:
-    #             raise
-    #     return host, group, subnet, ip
 
     @staticmethod
     def get_by_ip(ipaddr):
@@ -669,7 +585,6 @@ class Host(LDAPModel):
 
         host = Host.query.get(hid)
         dtask = Dtask.query.get(dtask_id)
-        err_str = ''
         try:
             host.ldap_add()
         except LDAPError:
@@ -703,8 +618,6 @@ class Host(LDAPModel):
 
         host = Host.query.get(hid)
         dtask = Dtask.query.get(dtask_id)
-        err_str = ''
-
         try:
             _logger.info(f"deleting host {host.name} from ldap")
             host.ldap_delete()
@@ -731,7 +644,7 @@ class Host(LDAPModel):
             dreq.refresh_status()
 
     @staticmethod
-    def single_host_register_track(*args, **kwargs):
+    def single_host_register_track(**kwargs):
         celery_task_id = kwargs.get('celery_task_id')
         dtask = Dtask.query.get(kwargs.get('dtask_id'))
         dtask.update(
@@ -848,7 +761,7 @@ class Host(LDAPModel):
 
 
     @staticmethod
-    def single_host_delete_track(*args, **kwargs):
+    def single_host_delete_track(**kwargs):
         celery_task_id = kwargs.get('celery_task_id')
         dtask = Dtask.query.get(kwargs.get('dtask_id'))
         dtask.update(
@@ -1054,9 +967,8 @@ class Group(LDAPModel):
         d = {self.name: {'group is synced':True, 'info':{}}}
         try:
             d = self.get_sync_stat()
-        except LDAPError as e:
+        except LDAPError:
             d[self.name]['group is synced'] = False
-            pass
         for g in d:
             if d[g]['group is synced']:
                 return d, None
@@ -1119,7 +1031,6 @@ class Group(LDAPModel):
                 ldap_entry = hst.ldap_get(parse=True)
             except NO_SUCH_OBJECT:
                 ldap_entry = None
-                pass
 
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
@@ -1717,12 +1628,10 @@ class Req(db.Model):
         self.commit()
 
     def commit(self):
-        try:
-            db.session.add(self)
-            db.session.commit()
-            _logger.debug("dreq %s was updated in DB" % self.id)
-        except Exception as e:
-            _logger.error(f"Failed commiting dreq {self}")
+
+        db.session.add(self)
+        db.session.commit()
+        _logger.debug("dreq %s was updated in DB" % self.id)
 
 
 class Dtask(db.Model):

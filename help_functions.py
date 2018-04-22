@@ -1,4 +1,3 @@
-import json
 import re
 import os
 import logbook
@@ -8,9 +7,7 @@ from functools import wraps
 
 from flask import jsonify, current_app
 from sqlalchemy.exc import IntegrityError
-from celery.result import AsyncResult
 from cob import db
-from cob.project import get_project
 
 _logger = logbook.Logger(__name__)
 ##### Helping functions ########
@@ -180,26 +177,26 @@ def update_req(func):
 
     return decorator
 
-def get_full_chain_tasks_list(top_async_result):
+# def get_full_chain_tasks_list(top_async_result):
 
-    full_list = []
-    if not top_async_result:
-        return []
-    if top_async_result.parent:
-        async_res = top_async_result
-        full_list = [top_async_result.id]
-        while async_res.parent:
-            full_list.append(async_res.parent.id)
-            async_res = async_res.parent
-    elif top_async_result.children:
-        for async_child in top_async_result.children:
-            full_list.append(async_child.id)
-    elif isinstance(top_async_result, AsyncResult):
-        # its just a simple task ,no group ,no chain
-        return [top_async_result.id]
-    else:
-        return []
-    return full_list
+#     full_list = []
+#     if not top_async_result:
+#         return []
+#     if top_async_result.parent:
+#         async_res = top_async_result
+#         full_list = [top_async_result.id]
+#         while async_res.parent:
+#             full_list.append(async_res.parent.id)
+#             async_res = async_res.parent
+#     elif top_async_result.children:
+#         for async_child in top_async_result.children:
+#             full_list.append(async_child.id)
+#     elif isinstance(top_async_result, AsyncResult):
+#         # its just a simple task ,no group ,no chain
+#         return [top_async_result.id]
+#     else:
+#         return []
+#     return full_list
 
 def parse_ldap_entry(entry):
     """ when running ldap, if everything was ok,
@@ -224,7 +221,7 @@ def extract_skeleton():
     '''
     use this function to extract LDAP skeleton for first dhcpawn deployment
     '''
-    config = get_project().config
+    # config = get_project().config
     skeleton = {'groups':[],
                 'subnets':{},
                 'dhcpranges':{},

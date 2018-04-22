@@ -1,7 +1,6 @@
 # cob: type=blueprint mountpoint=/rest
 import logbook
 import json
-from ldap import LDAPError, NO_SUCH_OBJECT
 
 from flask import Blueprint, jsonify, request
 from cob import db

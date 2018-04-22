@@ -7,13 +7,13 @@ from flask.views import MethodView
 from ipaddress import IPv4Address
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.exceptions import BadRequest
-from celery import group as celery_group, chain
-from celery.exceptions import CeleryError
+from celery import chain
+# from celery.exceptions import CeleryError
 from cob import db
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
 from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
-from .tasks import *
+from .tasks import task_single_input_registration, task_single_input_deletion, task_send_postreply, task_update_drequest
 
 
 _logger = logbook.Logger(__name__)
@@ -133,7 +133,7 @@ class HostListAPI(DhcpawnMethodView):
             host.group = group
 
         if subnet:
-            ip = alloc_single_ip(subnet, ip)
+            ip = Subnet.alloc_single_ip(subnet, ip)
             host.ip = ip
         try:
             db.session.add(host)
@@ -976,7 +976,7 @@ class MultipleAction(DhcpawnMethodView):
                 post_reply_job = task_send_postreply.s(**tinput)
                 full_chain = chain(register_chain, refresh_request_job, post_reply_job)
                 res = full_chain.apply_async()
-                self.msg = f"Registration to DB Finished. ldap async part is running. stay tuned.. {self.res}"
+                self.msg = f"Registration to DB Finished. ldap async part is running. stay tuned.. {res}"
 
     @gen_resp_deco
     @update_req
@@ -985,7 +985,6 @@ class MultipleAction(DhcpawnMethodView):
         self.drequest.request_type = "Async Multiple Deletion"
         self.data = request.get_json(force=True)
         self.drequest.update_drequest(params=self.data)
-        hard = False
         sync = False
         if 'deploy' in self.data:
             del self.data['deploy']
@@ -1027,7 +1026,7 @@ class MultipleAction(DhcpawnMethodView):
             _logger.debug("Adding post reply task to chain")
             full_chain = chain(delete_chain, refresh_request_job, post_reply_job)
             res = full_chain.apply_async()
-            self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {self.res}"
+            self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {res}"
 
 #### HELP FUNCTIONS
 # def hard_delete(data):
@@ -1106,9 +1105,9 @@ def validate_data_before_registration(data):
             remove_hosts_on_fail.append(host)
             if subnet:
                 if ip == 'allocate':
-                    ip = alloc_single_ip(subnet, 'allocate')
+                    ip = Subnet.alloc_single_ip(subnet, 'allocate')
                 elif ip:
-                    ip = alloc_single_ip(subnet, ip)
+                    ip = Subnet.alloc_single_ip(subnet, ip)
                 else:
                     raise DhcpawnError("what the fuck ? subnet exists (%s) but ip is none ?" % subnet.name)
                 remove_ips_on_fail.append(ip)
