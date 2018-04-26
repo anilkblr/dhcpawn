@@ -220,6 +220,8 @@ def parse_ldap_entry(entry):
     }
     return tmpd
 
+
+### Deploy help functions
 def extract_skeleton():
     '''
     use this function to extract LDAP skeleton for first dhcpawn deployment

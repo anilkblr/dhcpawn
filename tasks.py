@@ -6,13 +6,13 @@ import os
 # from celery.contrib import rdb
 from cob import task, db
 from cob.project import get_project
-from .models import Host, Group, Req, db, Dtask, IP
+from .models import Host, Group, Req, db, Dtask, IP, deploy_hosts, deploy_skeleton
 from .help_functions import *
 from celery.exceptions import WorkerLostError, TimeLimitExceeded
 from ldap import LDAPError, TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN
 from sqlalchemy.exc import IntegrityError
 
-__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply']
+__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
 if get_project().config.get('sync_config'):
     sync_every = get_project().config['sync_config']['group_sync_every']
     stat_every = get_project().config['sync_config']['sync_stat_every']
@@ -55,7 +55,7 @@ def task_get_sync_stat():
 
     # return stat
 
-@task(every=sync_every, use_app_context=True)
+# @task(every=sync_every, use_app_context=True)
 def task_sync():
     # run sync on all groups
     return Group.sync_all_groups()
@@ -201,6 +201,14 @@ def task_single_input_deletion(self, *args, **kwargs):
         Host.single_host_delete_track(*args, **kwargs)
     except (ValidationError, IntegrityError, LDAPError, ConflictingParamsError):
         pass
+
+@task(bind=True, use_app_context=True)
+def task_deploy(self, include_hosts):
+
+    deploy_skeleton()
+    if include_hosts:
+        deploy_hosts()
+    _logger.info("Finished Deployment Stage")
 
 # @task(bind=True, use_app_context=True)
 # # def task_host_ldap_add(self, hid, dtask_id, *args):
