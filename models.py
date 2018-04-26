@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from cob import db
 
 from .ldap_utils import server_dn
-from .help_functions import _get_or_none, get_by_field, parse_ldap_entry
+from .help_functions import _get_or_none, get_by_field, parse_ldap_entry, extract_skeleton
 from .help_functions import *
 
 _logger = logbook.Logger(__name__)
@@ -1802,3 +1802,68 @@ class Duplicate(db.Model):
     def _update(self):
         db.session.add(self)
         db.session.commit()
+
+# Deploy help functions
+def deploy_groups(skeleton):
+    _logger.info("Deploying Groups to DB")
+    for gr in skeleton['groups']:
+        group = Group(name=gr, options=json.dumps({}), deployed=True)
+        db.session.add(group)
+    db.session.commit()
+
+def deploy_subnets(skeleton):
+    _logger.info("Deploying Subnets to DB")
+    for sb in skeleton['subnets']:
+        subnet = Subnet(name=sb,
+                        netmask=skeleton['subnets'][sb].get('netmask'),
+                        options=json.dumps(skeleton['subnets'][sb].get('options',{})),
+                        deployed=True)
+        db.session.add(subnet)
+    db.session.commit()
+
+def deploy_pools(skeleton):
+    _logger.info("Deploying Pools to DB")
+    for pl in skeleton['pools']:
+        pool = Pool(name=pl,
+                    subnet_id=Subnet.query.filter_by(name=skeleton['pools'][pl].get('subnet_name')).first().id,
+                                                     options=json.dumps(skeleton['pools'][pl].get('options', {})),
+                                                     deployed=True)
+        db.session.add(pool)
+    db.session.commit()
+
+def deploy_calcranges(skeleton):
+    _logger.info("Deploying Calcranges to DB")
+    for sb in skeleton['calcranges']:
+        for cr in skeleton['calcranges'][sb]:
+            calcrange = CalculatedRange(
+                min=cr.get('min'),
+                max=cr.get('max'),
+                subnet_id=Subnet.query.filter_by(name=sb).first().id
+            )
+            db.session.add(calcrange)
+    db.session.commit()
+
+def deploy_dhcpranges(skeleton):
+    _logger.info("Deploying Dhcpranges to DB")
+    for pl in skeleton['dhcpranges']:
+        dhcprange = DhcpRange(
+            min=skeleton['dhcpranges'][pl].get('min'),
+            max=skeleton['dhcpranges'][pl].get('max'),
+            pool_id=Pool.query.filter_by(name=pl).first().id,
+            deployed=True
+            )
+        db.session.add(dhcprange)
+    db.session.commit()
+
+def deploy_skeleton():
+    skeleton = extract_skeleton()
+    deploy_groups(skeleton)
+    deploy_subnets(skeleton)
+    deploy_pools(skeleton)
+    deploy_calcranges(skeleton)
+    deploy_dhcpranges(skeleton)
+
+def deploy_hosts():
+
+    for gr in Group.query.all():
+        gr.deploy()
