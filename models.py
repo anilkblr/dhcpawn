@@ -240,7 +240,7 @@ class Host(LDAPModel):
 
     @staticmethod
     def validate_new_host_before_registration(**kwargs):
-
+        _logger.debug(f"validating {kwargs}")
         if any(key not in kwargs for key in ['hostname', 'mac', 'group', 'subnet', 'ip']):
             raise ValidationError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
         try:
@@ -253,11 +253,11 @@ class Host(LDAPModel):
             if subnet or ip:
                 if ip == '' or ip is None:
                     ip = 'allocate'
-                    host = Host(name=kwargs.get('hostname'),
-                                mac=mac,
-                                group_id=group.id,
-                                ip=Subnet.alloc_single_ip(subnet, ip)
-                    )
+                host = Host(name=kwargs.get('hostname'),
+                            mac=mac,
+                            group_id=group.id,
+                            ip=Subnet.alloc_single_ip(subnet, ip)
+                )
 
             else:
                 host = Host(name=kwargs.get('hostname'),
@@ -292,20 +292,21 @@ class Host(LDAPModel):
         '''
         rsubnet = kwargs.get('subnet')
         rip = kwargs.get('ip')
-        if rsubnet is None and rip is None:
+        if rip is None:
             return None, None
-
-        if rsubnet:
+        elif rsubnet is None:
+            subnet = IP.get_subnet(rip)
+        else:
             try:
                 subnet = Subnet.validate_by_name(rsubnet)
             except ValidationError as e:
                 raise BadSubnetName(e.__str__())
-        if rip:
-            if IP.query.filter_by(address=rip).first():
-                raise IPAlreadyExists(f"IP {rip} already in DB")
+            else:
+                if not IP.ip_in_subnet(rip, rsubnet):
+                    raise ValidationError(f"IP {rip} is not in subnet {subnet}")
 
-            if not IP.ip_in_subnet(rip, rsubnet):
-                raise ValidationError(f"IP {rip} is not in subnet {rsubnet}")
+        if IP.query.filter_by(address=rip).first():
+            raise IPAlreadyExists(f"IP {rip} already in DB")
 
         return subnet, rip
 
@@ -1001,11 +1002,14 @@ class Group(LDAPModel):
         # only in ldap
         for ldap_host_dn in ldap_records:
             ldap_name = ldap_host_dn[1]['cn'][0].decode('utf-8')
+            ldap_mac = ldap_host_dn[1]['dhcpHWAddress'][0].decode('utf-8').replace('ethernet','').strip()
+            ldap_group = ldap_host_dn[0].split(',')[1].replace('cn=','')
+            ldap_ip = ldap_host_dn[1]['dhcpStatements'][0].decode('utf-8').replace('fixed-address','').strip() if ldap_host_dn[1].get('dhcpStatements') else None
             tmphost = Host.query.filter_by(name=ldap_name).first()
             if not isinstance(tmphost, Host) or tmphost.dn() != ldap_host_dn[0]:
                 info.setdefault('only in ldap', [])
                 _logger.debug("Entry exists only in LDAP %s" % ldap_name)
-                info['only in ldap'].append(ldap_name)
+                info['only in ldap'].append((ldap_name, ldap_mac, ldap_group, ldap_ip))
 
         # only in db
         for h in db_records:
@@ -1047,6 +1051,7 @@ class Group(LDAPModel):
                 returned['synced'].update({g:groups[g]})
             else:
                 returned['not synced'].update({g:groups[g]})
+
         return returned
 
     def group_sync(self, **kwargs):
@@ -1082,16 +1087,41 @@ class Group(LDAPModel):
                         host.ldap_add()
                         stat_dict[grp]['added to ldap'].append(host2sync)
 
-                if info.get('only in ldap') and kwargs.get('sync_delete_ldap_entries', False):
+                if info.get('only in ldap'):
+                    # we have two ways to sync this case:
+                    # 1. delete the record in ldap
+                    # 2. add the record to DB
+                    # the next two "if" statements will choose
                     stat_dict[grp].setdefault('deleted from ldap', [])
-                    for host2sync in info['only in ldap']:
-                        _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % host2sync)
-                        extra_host_dn = "cn=%s,%s" % (host2sync, gr.dn())
-                        ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
-                        if ldap_extra_host_dn:
-                            _logger.info(f"Going to delete {ldap_extra_host_dn[0][0]} from LDAP")
-                            gr.ldap_delete(ldap_extra_host_dn[0][0])
-                            stat_dict[grp]['deleted from ldap'].append(host2sync)
+                    stat_dict[grp].setdefault('added to db', [])
+                    for ldap_name, ldap_mac, ldap_group, ldap_ip in info['only in ldap']:
+                        if kwargs.get('sync_delete_ldap_entries', False):
+                            # option 1: delete the record from ldap
+                            _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % ldap_name)
+                            extra_host_dn = "cn=%s,%s" % (ldap_name, gr.dn())
+                            ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
+                            if ldap_extra_host_dn:
+                                _logger.info(f"Going to delete {ldap_extra_host_dn[0][0]} from LDAP")
+                                gr.ldap_delete(ldap_extra_host_dn[0][0])
+                                stat_dict[grp]['deleted from ldap'].append(ldap_name)
+
+                        elif kwargs.get('sync_copy_ldap_entries_to_db',True):
+                            # option 2: add record to DB
+                            _logger.debug(f"Adding new record to DB for host {ldap_name}")
+                            to_validate = dict(
+                                hostname=ldap_name,
+                                mac=ldap_mac,
+                                group=ldap_group,
+                                ip=ldap_ip,
+                                subnet=IP.get_subnet(ldap_ip).name if (ldap_ip and IP.get_subnet(ldap_ip)) else None
+                            )
+                            try:
+                                host2add = Host.validate_new_host_before_registration(**to_validate)
+                            except (DhcpawnError, ValidationError) as e:
+                                _logger.error(f"Failed syncing {ldap_name} by adding DB record. {e.__str__()}")
+                            else:
+                                db.session.add(host2add)
+                                db.session.commit()
 
                 if info.get('content'):
                     stat_dict[grp].setdefault('updated in ldap', [])
@@ -1422,10 +1452,10 @@ class IP(db.Model):
             return None
 
     @staticmethod
-    def ip_in_subnet(addr, subnet):
-        ''' get addr and subnet and check if ip address
+    def ip_in_subnet(addr, subnet_name):
+        ''' get addr and subnet_name and check if ip address
         is in one of the subnet's calculated ranges '''
-        if IP.get_subnet(addr) == Subnet.validate_by_name(subnet):
+        if IP.get_subnet(addr).name == Subnet.validate_by_name(subnet_name).name:
             return True
         return False
 

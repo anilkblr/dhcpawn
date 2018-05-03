@@ -1,15 +1,16 @@
 import re
 import logbook
 import json
+import gossip
 from sqlalchemy import desc
 from flask import jsonify, request, url_for
 from flask.views import MethodView
 from ipaddress import IPv4Address
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.exceptions import BadRequest
-from celery import group as celery_group, chain
-from celery.exceptions import CeleryError
+from celery import chain
 from cob import db
+from raven.contrib.flask import Sentry
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
 from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
@@ -1292,3 +1293,10 @@ class Sync(DhcpawnMethodView):
         else:
             self.msg = "Sync did not change anything"
             self.result = self.d
+
+
+### Sentry
+# @gossip.register('cob.after_configure_app')
+# def after_configure_app(app):
+#     app.config['SENTRY_DSN'] = 'http://1798f04a5bc749e7a99ba63eb8346e60:4560f83a51764b7b8f4fc400aa4b0b8e@sentry.infinidat.com/51'
+#     Sentry(app)

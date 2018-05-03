@@ -102,13 +102,24 @@ def deploy_server():
     '''
     data = request.get_json(force=True)
     _logger.info("before deploying")
-    task_deploy.s(data.get('hosts')).apply_async()
+    if data.get('hosts'):
+        if (data.get('hosts') == "True" or data.get('hosts') == "true"):
+            task_deploy.s(True).apply_async()
+        else:
+            task_deploy.s(False).apply_async()
+    else:
+        return jsonify(f"Wrong input data {data}")
+
     return jsonify("Deployement started")
 
 @api.route('/get_sync_stat/')
 def gss():
+    import pudb;pudb.set_trace()
     return jsonify(Group.get_sync_stat_for_all_groups())
 
 @api.route('/sync_all_groups/')
 def sync_all_groups():
-    return jsonify(Group.sync_all_groups())
+    for gr in Group.query.all():
+        gr.group_sync(**{'gr_name': gr.name})
+
+    # return jsonify(Group.sync_all_groups())
