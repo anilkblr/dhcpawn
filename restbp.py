@@ -114,7 +114,6 @@ def deploy_server():
 
 @api.route('/get_sync_stat/')
 def gss():
-    import pudb;pudb.set_trace()
     return jsonify(Group.get_sync_stat_for_all_groups())
 
 @api.route('/sync_all_groups/')
