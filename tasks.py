@@ -12,13 +12,27 @@ from celery import chain
 from celery.exceptions import WorkerLostError, TimeLimitExceeded
 from ldap import LDAPError, TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN
 from sqlalchemy.exc import IntegrityError
+from raven import Client
+from raven.contrib.celery import register_signal, register_logger_signal
+import logging
+
+dhcpawn_project = get_project()
+
+# enable Sentry in celery workers
+# taken from https://docs.sentry.io/clients/python/integrations/celery/
+client = Client(dhcpawn_project.config['sentry_config'].get('SENTRY_DSN'))
+register_logger_signal(client)
+register_logger_signal(client, loglevel=logging.INFO)
+register_signal(client)
+register_signal(client, ignore_expected=True)
+
 
 __all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
 if get_project().config.get('sync_config'):
-    sync_every = get_project().config['sync_config']['group_sync_every']
-    stat_every = get_project().config['sync_config']['sync_stat_every']
-    sync_delete_ldap_entries = get_project().config['sync_config'].get('sync_delete_ldap_entries', os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
-    sync_copy_ldap_entries_to_db = get_project().config['sync_config'].get('sync_copy_ldap_entries_to_db', os.getenv('_DHCPAWN_SYNC_COPY_LDAP_ENTRIES_TO_DB', True))
+    sync_every = dhcpawn_project.config['sync_config']['group_sync_every']
+    stat_every = dhcpawn_project.config['sync_config']['sync_stat_every']
+    sync_delete_ldap_entries = dhcpawn_project.config['sync_config'].get('sync_delete_ldap_entries', os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
+    sync_copy_ldap_entries_to_db = dhcpawn_project.config['sync_config'].get('sync_copy_ldap_entries_to_db', os.getenv('_DHCPAWN_SYNC_COPY_LDAP_ENTRIES_TO_DB', True))
 else:
     sync_every = 600
     stat_every = 300
