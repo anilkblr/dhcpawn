@@ -46,8 +46,8 @@ def task_get_sync_stat():
     # get sync stat for all groups
     return Group.get_sync_stat_for_all_groups()
 
-@task(use_app_context=True)
-def task_sync_per_group(*args, **kwargs):
+@task(bind=True, use_app_context=True)
+def task_sync_per_group(self, *args, **kwargs):
     gr_name = kwargs.get('gr_name')
     gr = Group.validate_by_name(gr_name)
     _logger.debug(f"Start syncing group {gr}")
@@ -72,7 +72,7 @@ def task_sync_new(self):
         # probably need to deploy skeleton
         _logger.debug("Detected empty DB - no skeleton - populating from LDAP to DB.")
         deploy_skeleton()
-        return
+        return jsonify("Synced LDAP Skeleton to DB. next time will update hosts per group.")
 
     sync_tasks_group = []
     for gr in Group.query.all():
@@ -81,12 +81,6 @@ def task_sync_new(self):
 
     sync_chain = chain(sync_tasks_group)
     sync_chain.apply_async()
-
-
-# # @task(every=sync_every, use_app_context=True)
-# def task_sync():
-#     # run sync on all groups
-#     return Group.sync_all_groups()
 
 @task(bind=True)
 def task_get_group_sync_stat(self, group_name, dtask_id):
@@ -131,23 +125,24 @@ def task_send_postreply(self, *args, **kwargs):
     try:
         req.postreply()
     except DhcpawnError as e:
-        self.retry(countdown=5, exc=e, max_retries=10)
+        _logger.debug("Trying postreply again")
+        self.retry(countdown=15, exc=e, max_retries=10)
 
 @task(bind=True, use_app_context=True)
 def task_single_input_registration(self, *args, **kwargs):
     kwargs.update({'celery_task_id':self.request.id})
     try:
         Host.single_host_register_track(*args, **kwargs)
-    except (ValidationError, IntegrityError, LDAPError):
-        pass
+    except (ValidationError, IntegrityError, LDAPError, IPAlreadyExists) as e:
+        _logger.error(f"Failed single register track {e.__str__()}")
 
 @task(bind=True, use_app_context=True)
 def task_single_input_deletion(self, *args, **kwargs):
     kwargs.update({'celery_task_id':self.request.id})
     try:
         Host.single_host_delete_track(*args, **kwargs)
-    except (ValidationError, IntegrityError, LDAPError, ConflictingParamsError):
-        pass
+    except (ValidationError, IntegrityError, LDAPError, ConflictingParamsError, IPAlreadyExists) as e:
+        _logger.error(f"Failed single delete track {e.__str__()}")
 
 @task(bind=True, use_app_context=True)
 def task_deploy(self, include_hosts):
