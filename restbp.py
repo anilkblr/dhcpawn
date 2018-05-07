@@ -118,7 +118,18 @@ def gss():
 
 @api.route('/sync_all_groups/')
 def sync_all_groups():
-    for gr in Group.query.all():
-        gr.group_sync(**{'gr_name': gr.name})
 
-    # return jsonify(Group.sync_all_groups())
+    task_sync_new.s().apply_async()
+    # for gr in Group.query.all():
+    #     _logger.debug(f"Start syncing group {gr}")
+    #     try:
+    #         kwargs.update({'gr_name': gr.name})
+    #         kwargs.update({'sync_delete_ldap_entries':False})
+    #         kwargs.update({'sync_copy_ldap_entries_to_db':True})
+    #         tmpd, host_stat_dict = gr.group_sync(**kwargs)
+    #         return tmpd
+
+    #     except (LDAPError, DhcpawnError) as e:
+    #         _logger.error(f"failed group {gr} sync {e.__str__()}")
+
+    return jsonify("Sent sync all groups task")

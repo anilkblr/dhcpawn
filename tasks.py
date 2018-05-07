@@ -27,7 +27,7 @@ register_signal(client)
 register_signal(client, ignore_expected=True)
 
 
-__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
+__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy', 'task_sync_new']
 if get_project().config.get('sync_config'):
     sync_every = dhcpawn_project.config['sync_config']['group_sync_every']
     stat_every = dhcpawn_project.config['sync_config']['sync_stat_every']

@@ -1161,6 +1161,8 @@ class Group(LDAPModel):
 
         # only in ldap
         for ldap_host_dn in ldap_records:
+            if ldap_host_dn[1].get('objectClass') and b'dhcpGroup' in ldap_host_dn[1].get('objectClass'):
+                continue
             ldap_name = ldap_host_dn[1]['cn'][0].decode('utf-8')
             ldap_mac = ldap_host_dn[1]['dhcpHWAddress'][0].decode('utf-8').replace('ethernet','').strip()
             ldap_group = ldap_host_dn[0].split(',')[1].replace('cn=','')
@@ -1879,7 +1881,7 @@ class Req(db.Model):
         if not self.replied and self.reply_url:
             # url = '%s%s/' % (self.reply_url, self.id)
             _logger.info("Post reply to url %s" % self.reply_url)
-            requests.post(self.reply_url, data=self.config())
+            requests.post(self.reply_url, data=self.config(), verify=False)
             self.replied = True
             self.commit()
             # self.refresh_status()
