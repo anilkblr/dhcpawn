@@ -16,3 +16,5 @@ celerybeat-schedule
 dhcpawn_tmuxconf.yml
 .cob-project.yml
 ldap_utils.py
+
+.Dockerfile

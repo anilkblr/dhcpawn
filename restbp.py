@@ -102,7 +102,14 @@ def deploy_server():
     '''
     data = request.get_json(force=True)
     _logger.info("before deploying")
-    task_deploy.s(data.get('hosts')).apply_async()
+    if data.get('hosts'):
+        if (data.get('hosts') == "True" or data.get('hosts') == "true"):
+            task_deploy.s(True).apply_async()
+        else:
+            task_deploy.s(False).apply_async()
+    else:
+        return jsonify(f"Wrong input data {data}")
+
     return jsonify("Deployement started")
 
 @api.route('/get_sync_stat/')
@@ -111,4 +118,18 @@ def gss():
 
 @api.route('/sync_all_groups/')
 def sync_all_groups():
-    return jsonify(Group.sync_all_groups())
+
+    task_sync_new.s().apply_async()
+    # for gr in Group.query.all():
+    #     _logger.debug(f"Start syncing group {gr}")
+    #     try:
+    #         kwargs.update({'gr_name': gr.name})
+    #         kwargs.update({'sync_delete_ldap_entries':False})
+    #         kwargs.update({'sync_copy_ldap_entries_to_db':True})
+    #         tmpd, host_stat_dict = gr.group_sync(**kwargs)
+    #         return tmpd
+
+    #     except (LDAPError, DhcpawnError) as e:
+    #         _logger.error(f"failed group {gr} sync {e.__str__()}")
+
+    return jsonify("Sent sync all groups task")

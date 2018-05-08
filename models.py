@@ -240,24 +240,24 @@ class Host(LDAPModel):
 
     @staticmethod
     def validate_new_host_before_registration(**kwargs):
-
+        _logger.debug(f"validating {kwargs}")
         if any(key not in kwargs for key in ['hostname', 'mac', 'group', 'subnet', 'ip']):
             raise ValidationError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
         try:
             mac = Host._unique_mac(kwargs.get('mac'))
             group = Group.validate_by_name(kwargs.get('group'))
             subnet, ip = Host._ip_subnet_validation(**kwargs)
-        except ValidationError:
-            raise
+        except (ValidationError, IPAlreadyExists, BadSubnetName) as e:
+            raise ValidationError(e.__str__())
         else:
             if subnet or ip:
                 if ip == '' or ip is None:
                     ip = 'allocate'
-                    host = Host(name=kwargs.get('hostname'),
-                                mac=mac,
-                                group_id=group.id,
-                                ip=Subnet.alloc_single_ip(subnet, ip)
-                    )
+                host = Host(name=kwargs.get('hostname'),
+                            mac=mac,
+                            group_id=group.id,
+                            ip=Subnet.alloc_single_ip(subnet, ip)
+                )
 
             else:
                 host = Host(name=kwargs.get('hostname'),
@@ -292,7 +292,7 @@ class Host(LDAPModel):
         '''
         rsubnet = kwargs.get('subnet')
         rip = kwargs.get('ip')
-        if rsubnet is None and rip is None:
+        if rip is None and rsubnet is None:
             return None, None
 
         if rsubnet:
@@ -300,12 +300,37 @@ class Host(LDAPModel):
                 subnet = Subnet.validate_by_name(rsubnet)
             except ValidationError as e:
                 raise BadSubnetName(e.__str__())
-        if rip:
-            if IP.query.filter_by(address=rip).first():
-                raise IPAlreadyExists(f"IP {rip} already in DB")
 
+        if rip and IP.query.filter_by(address=rip).first():
+            raise IPAlreadyExists(f"IP {rip} already in DB")
+
+        if rip and rsubnet is None:
+            subnet = IP.get_subnet(rip)
+
+        if rip and rsubnet:
             if not IP.ip_in_subnet(rip, rsubnet):
-                raise ValidationError(f"IP {rip} is not in subnet {rsubnet}")
+                raise ValidationError(f"IP {rip} is not in subnet {subnet}")
+
+        # elif rip and rsubnet is None:
+        #     subnet = IP.get_subnet(rip)
+        # elif rip is None and rsubnet:
+        #     subnet = Subnet.validate_by_name(rsubnet)
+        # elif rip and rsubnet:
+        #     subnet = Subnet.validate_by_name(rsubnet)
+        #     if not IP.ip_in_subnet(rip, rsubnet):
+        #         raise ValidationError(f"IP {rip} is not in subnet {subnet}")
+
+        # else: #
+        #     try:
+        #         subnet = Subnet.validate_by_name(rsubnet)
+        #     except ValidationError as e:
+        #         raise BadSubnetName(e.__str__())
+        #     else:
+        #         if not IP.ip_in_subnet(rip, rsubnet):
+        #             raise ValidationError(f"IP {rip} is not in subnet {subnet}")
+
+        # if IP.query.filter_by(address=rip).first():
+        #     raise IPAlreadyExists(f"IP {rip} already in DB")
 
         return subnet, rip
 
@@ -730,6 +755,78 @@ class Host(LDAPModel):
             dreq = Req.query.get(dtask.dreq_id)
             dreq.refresh_status()
 
+    # @staticmethod
+    # def single_host_register_track_sync_working(*args, **kwargs):
+    #     celery_task_id = kwargs.get('celery_task_id')
+    #     dtask = Dtask.query.get(kwargs.get('dtask_id'))
+    #     dtask.update(
+    #             desc= f"Starting single register track for {kwargs['hdata'].get('hostname')}",
+    #             celery_task_id= celery_task_id
+    #         )
+    #     new = True
+    #     try:
+    #         host = Host.query.filter_by(name=kwargs['hdata'].get('hostname')).first()
+    #         if host:
+    #             new_mac, new_group, new_ip = Host.validate_existing_host_before_registration(**kwargs['hdata'])
+    #             try:
+    #                 host.mac = new_mac if new_mac else host.mac
+    #                 host.group = new_group if new_group else host.group
+    #                 host.ip = new_ip if new_ip else host.ip
+    #             except IntegrityError:
+    #                 # db update failed - rollback
+    #                 db.session.rollback()
+    #             else:
+    #                 db.session.add(host)
+    #                 db.session.commit()
+    #             new = False
+    #         else:
+    #             host = Host.validate_new_host_before_registration(**kwargs['hdata'])
+    #     except ValidationError as e:
+    #         _logger.error(f"Failed dtask {dtask.id}")
+    #         dtask.update(
+    #             status= 'failed',
+    #             desc= f"single host validation failed ({e.__str__()})",
+    #         )
+    #         raise
+    #     except DoNothingRecordExists:
+    #         host = Host.query.filter_by(name=kwargs.get('hdata').get('hostname')).first()
+    #         dtask.update(
+    #             status= 'succeeded',
+    #             desc= f"Host with these params already exists in DB - nothing to do in DB",
+    #             result= json.dumps({kwargs.get('hkey'):host.config()})
+    #         )
+    #     else:
+    #         dtask.update(
+    #             desc= 'passed single host validation',
+    #         )
+    #         if new:
+    #             dtask.update(desc=f"Created new host {host}")
+    #             try:
+    #                 db.session.add(host)
+    #                 db.session.commit()
+    #             except IntegrityError as e:
+    #                 dtask.update(
+    #                     status= 'failed',
+    #                     desc= f"Failed DB commit for host {host}",
+    #                     err_str= e.__str__(),
+    #                 )
+    #                 # TODO: still need to remove record from ldap or
+    #                 # something like that becuase commiting host to DB failed
+    #                 db.session.delete(host.ip)
+    #                 db.session.commit()
+    #                 raise
+    #             else:
+    #                 dtask.update(
+    #                     status= 'succeeded',
+    #                     desc= f"Finished single host register track for {host}",
+    #                     result= json.dumps({kwargs.get('hkey'):host.config()})
+    #                 )
+    #         else: # host already in DB
+    #             dtask.update(status='succeeded',
+    #                          desc=f"Host {host} already in DB. just updated DB",
+    #                          result= json.dumps({kwargs.get('hkey'):host.config()})
+    #                          )
+
     @staticmethod
     def single_host_register_track(*args, **kwargs):
         celery_task_id = kwargs.get('celery_task_id')
@@ -845,6 +942,70 @@ class Host(LDAPModel):
 
         # finally:
             # dtask.req.refresh_status()
+
+    # @staticmethod
+    # def single_host_delete_track_sync_working(*args, **kwargs):
+    #     celery_task_id = kwargs.get('celery_task_id')
+    #     dtask = Dtask.query.get(kwargs.get('dtask_id'))
+    #     dtask.update(
+    #             desc= f"Starting single delete track for {kwargs['hdata'].get('hostname')}",
+    #             celery_task_id= celery_task_id
+    #         )
+    #     try:
+    #         host = Host.validate_host_before_deletion(**kwargs['hdata'])
+    #     except ValidationError as e:
+    #         _logger.error(f"Failed dtask {dtask.id}")
+    #         dtask.update(
+    #             status= 'failed',
+    #             desc= f"single host validation failed ({e.__str__()})",
+    #         )
+    #         raise
+    #     except ConflictingParamsError as e:
+    #         _logger.error(f"Failed dtask {dtask.id}")
+    #         dtask.update(
+    #             status= 'failed',
+    #             desc= f"Single host delete validation failed)",
+    #             err_str = e.__str__()
+    #         )
+    #     except DoNothingRecordNotInDB:
+    #         dtask.update(
+    #             status= 'succeeded',
+    #             desc= f"Host by name {kwargs['hdata'].get('hostname')} does not exist in DB - nothing to do",
+    #             result= json.dumps({kwargs.get('hkey'):kwargs['hdata'].get('hostname')})
+    #         )
+    #     else:
+    #         dtask.update(
+    #             desc= 'passed single host validation',
+    #         )
+
+    #         try:
+    #             host.ldap_delete()
+    #         except LDAPError as e:
+    #             dtask.update(
+    #                 status= 'failed',
+    #                 desc= f"Failed ldap delete {host}",
+    #                 err_str = e.__str__()
+    #             )
+    #         else:
+    #             success_result = json.dumps({kwargs.get('hkey'):host.config()})
+    #             if host.ip:
+    #                 db.session.delete(host.ip)
+    #             try:
+    #                 db.session.delete(host)
+    #                 db.session.commit()
+    #             except IntegrityError as e:
+    #                 dtask.update(
+    #                     status= 'failed',
+    #                     desc= f"Failed DB deletion for host {host}",
+    #                     err_str= e.__str__(),
+    #                 )
+    #                 raise
+    #             else:
+    #                 dtask.update(
+    #                     status= 'succeeded',
+    #                     desc= f"Finished single host delete track for {host}",
+    #                     result= success_result
+    #                 )
 
 
     @staticmethod
@@ -1000,12 +1161,17 @@ class Group(LDAPModel):
 
         # only in ldap
         for ldap_host_dn in ldap_records:
+            if ldap_host_dn[1].get('objectClass') and b'dhcpGroup' in ldap_host_dn[1].get('objectClass'):
+                continue
             ldap_name = ldap_host_dn[1]['cn'][0].decode('utf-8')
+            ldap_mac = ldap_host_dn[1]['dhcpHWAddress'][0].decode('utf-8').replace('ethernet','').strip()
+            ldap_group = ldap_host_dn[0].split(',')[1].replace('cn=','')
+            ldap_ip = ldap_host_dn[1]['dhcpStatements'][0].decode('utf-8').replace('fixed-address','').strip() if ldap_host_dn[1].get('dhcpStatements') else None
             tmphost = Host.query.filter_by(name=ldap_name).first()
             if not isinstance(tmphost, Host) or tmphost.dn() != ldap_host_dn[0]:
                 info.setdefault('only in ldap', [])
                 _logger.debug("Entry exists only in LDAP %s" % ldap_name)
-                info['only in ldap'].append(ldap_name)
+                info['only in ldap'].append((ldap_name, ldap_mac, ldap_group, ldap_ip))
 
         # only in db
         for h in db_records:
@@ -1047,6 +1213,7 @@ class Group(LDAPModel):
                 returned['synced'].update({g:groups[g]})
             else:
                 returned['not synced'].update({g:groups[g]})
+
         return returned
 
     def group_sync(self, **kwargs):
@@ -1082,16 +1249,41 @@ class Group(LDAPModel):
                         host.ldap_add()
                         stat_dict[grp]['added to ldap'].append(host2sync)
 
-                if info.get('only in ldap') and kwargs.get('sync_delete_ldap_entries', False):
+                if info.get('only in ldap'):
+                    # we have two ways to sync this case:
+                    # 1. delete the record in ldap
+                    # 2. add the record to DB
+                    # the next two "if" statements will choose
                     stat_dict[grp].setdefault('deleted from ldap', [])
-                    for host2sync in info['only in ldap']:
-                        _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % host2sync)
-                        extra_host_dn = "cn=%s,%s" % (host2sync, gr.dn())
-                        ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
-                        if ldap_extra_host_dn:
-                            _logger.info(f"Going to delete {ldap_extra_host_dn[0][0]} from LDAP")
-                            gr.ldap_delete(ldap_extra_host_dn[0][0])
-                            stat_dict[grp]['deleted from ldap'].append(host2sync)
+                    stat_dict[grp].setdefault('added to db', [])
+                    for ldap_name, ldap_mac, ldap_group, ldap_ip in info['only in ldap']:
+                        if kwargs.get('sync_delete_ldap_entries', False):
+                            # option 1: delete the record from ldap
+                            _logger.debug("Deleting extra host %s from LDAP (found only on LDAP)" % ldap_name)
+                            extra_host_dn = "cn=%s,%s" % (ldap_name, gr.dn())
+                            ldap_extra_host_dn = gr.ldap_get(extra_host_dn)
+                            if ldap_extra_host_dn:
+                                _logger.info(f"Going to delete {ldap_extra_host_dn[0][0]} from LDAP")
+                                gr.ldap_delete(ldap_extra_host_dn[0][0])
+                                stat_dict[grp]['deleted from ldap'].append(ldap_name)
+
+                        elif kwargs.get('sync_copy_ldap_entries_to_db',True):
+                            # option 2: add record to DB
+                            _logger.debug(f"Adding new record to DB for host {ldap_name}")
+                            to_validate = dict(
+                                hostname=ldap_name,
+                                mac=ldap_mac,
+                                group=ldap_group,
+                                ip=ldap_ip,
+                                subnet=IP.get_subnet(ldap_ip).name if (ldap_ip and IP.get_subnet(ldap_ip)) else None
+                            )
+                            try:
+                                host2add = Host.validate_new_host_before_registration(**to_validate)
+                            except (DhcpawnError, ValidationError) as e:
+                                _logger.error(f"Failed syncing {ldap_name} by adding DB record. {e.__str__()}")
+                            else:
+                                db.session.add(host2add)
+                                db.session.commit()
 
                 if info.get('content'):
                     stat_dict[grp].setdefault('updated in ldap', [])
@@ -1422,10 +1614,10 @@ class IP(db.Model):
             return None
 
     @staticmethod
-    def ip_in_subnet(addr, subnet):
-        ''' get addr and subnet and check if ip address
+    def ip_in_subnet(addr, subnet_name):
+        ''' get addr and subnet_name and check if ip address
         is in one of the subnet's calculated ranges '''
-        if IP.get_subnet(addr) == Subnet.validate_by_name(subnet):
+        if IP.get_subnet(addr).name == Subnet.validate_by_name(subnet_name).name:
             return True
         return False
 
@@ -1689,7 +1881,7 @@ class Req(db.Model):
         if not self.replied and self.reply_url:
             # url = '%s%s/' % (self.reply_url, self.id)
             _logger.info("Post reply to url %s" % self.reply_url)
-            requests.post(self.reply_url, data=self.config())
+            requests.post(self.reply_url, data=self.config(), verify=False)
             self.replied = True
             self.commit()
             # self.refresh_status()
@@ -1754,10 +1946,13 @@ class Dtask(db.Model):
             self.desc = kwargs.get('desc')
         if 'status' in kwargs:
             self.status = kwargs.get('status')
+            if kwargs.get('status') == 'failed':
+                _logger.error(f"Task failed: {kwargs.get('desc')} - {kwargs.get('err_str')}")
         if 'err_str' in kwargs:
             self.err_str = kwargs.get('err_str')
         if 'result' in kwargs:
             self.result = kwargs.get('result')
+
         self.commit()
 
     def config(self):
