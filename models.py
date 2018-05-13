@@ -184,7 +184,7 @@ class Host(LDAPModel):
                     mac=self.mac,
                     ip_id=self.ip.id if self.ip else None,
                     ip=self.ip.address.__str__() if self.ip else None,
-                    subnet=self.subnet().__str__(),
+                    subnet=self.subnet().__str__() if self.subnet() else None,
                     group=self.group_id,
                     group_name=self.group.name,
                     options=json.loads(self.options) if self.options else None,
