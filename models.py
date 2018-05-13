@@ -1467,8 +1467,9 @@ class Subnet(LDAPModel):
     def allocate_free_ip(self):
         for cr in self.calcranges.all():
             try:
-                ip = cr.allocate_free_ips()
-                return ip[0]
+                if cr.get_free_ips():
+                    ip = cr.allocate_free_ips()
+                    return ip[0]
             except DhcpawnError:
                 raise
 
