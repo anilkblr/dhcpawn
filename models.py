@@ -184,7 +184,7 @@ class Host(LDAPModel):
                     mac=self.mac,
                     ip_id=self.ip.id if self.ip else None,
                     ip=self.ip.address.__str__() if self.ip else None,
-                    subnet=self.subnet().__str__(),
+                    subnet=self.subnet().__str__() if self.subnet() else None,
                     group=self.group_id,
                     group_name=self.group.name,
                     options=json.loads(self.options) if self.options else None,
@@ -1467,8 +1467,9 @@ class Subnet(LDAPModel):
     def allocate_free_ip(self):
         for cr in self.calcranges.all():
             try:
-                ip = cr.allocate_free_ips()
-                return ip[0]
+                if cr.get_free_ips():
+                    ip = cr.allocate_free_ips()
+                    return ip[0]
             except DhcpawnError:
                 raise
 
