@@ -3,6 +3,7 @@ import logbook
 import json
 import gossip
 from sqlalchemy import desc
+from sqlalchemy.orm import joinedload
 from flask import jsonify, request, url_for
 from flask.views import MethodView
 from ipaddress import IPv4Address
@@ -110,7 +111,7 @@ class HostListAPI(DhcpawnMethodView):
     @gen_resp_deco
     def get(self):
         ''' used to get a list of all hosts from database '''
-        hosts = Host.query.all()
+        hosts = Host.query.options(joinedload(Host.ip)).options(joinedload(Host.group)).all()
         self.result = dict(items=[host.config() for host in hosts])
         self.msg = 'get all hosts'
 
