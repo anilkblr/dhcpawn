@@ -9,9 +9,9 @@ from cob.celery.app import celery_app
 from cob.project import get_project
 
 from . import methodviews as mv
-from .models import Subnet, IP, CalculatedRange
+from .models import Subnet, IP, CalculatedRange, Group, Host
 from .help_functions import subnet_get_calc_ranges, _get_or_none, gen_resp_deco
-
+from sqlalchemy.orm import joinedload
 
 _logger = logbook.Logger(__name__)
 api = Blueprint('query', __name__)
@@ -158,6 +158,20 @@ def query_subnet_options(sname):
         ret['errors'] = e.__str__()
 
     ret['result'] = json.loads(subnet.options)
+    return ret
+
+@api.route('/hosts/get_all_hosts_by_group/<group_name>', methods=['GET'])
+@gen_resp_deco
+def query_hosts_by_group(group_name):
+
+    ret = {"errors":None, "result":None}
+    try:
+        gr = Group.validate_by_name(group_name)
+    except ValueError as e:
+        ret['errors'] = e.__str__()
+
+    hosts = Host.query.filter_by(group_id=gr.id).options(joinedload(Host.ip)).options(joinedload(Host.group)).all()
+    ret['result'] = dict(items=[host.config() for host in hosts])
     return ret
 
 #### Help funcs
