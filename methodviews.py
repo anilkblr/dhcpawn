@@ -232,7 +232,22 @@ class HostAPI(HostBaseAPI):
             self.errors = e.description
             self.msg = 'check that you actually provided the request info'
             return
-        self.update_host(host)
+        dtasks_group = []
+        self.drequest.request_type = "Sync Single Host Update"
+        self.drequest.update_drequest(params=self.data)
+
+        for hkey in self.data:
+            dtasks_group.append(Dtask(self.drequest.id))
+            tinput = {
+                'hkey': hkey,
+                'hdata': self.data[hkey],
+                'dtask_id': dtasks_group[-1].id
+            }
+            Host.single_host_register_track(**tinput)
+
+        self.drequest.refresh_status()
+        self.msg = 'The Sync Way'
+        # self.update_host(host)
 
     @gen_resp_deco
     @update_req
@@ -917,7 +932,6 @@ def identify_param(model, param, ptrns):
     return None
 
 class MultipleAction(DhcpawnMethodView):
-
     @gen_resp_deco
     @update_req
     def post(self):
