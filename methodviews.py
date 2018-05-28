@@ -118,36 +118,29 @@ class HostListAPI(DhcpawnMethodView):
     @gen_resp_deco
     @update_req
     def post(self):
-        """ create new host entry in database and ldap"""
-        self.data = request.get_json(force=True)
+        """ create new host entry in database and ldap - syncronous"""
+
         try:
-            host, group, subnet, ip = Host.single_input_validate_before_registration(create_duplicate_record=False,**self.data)
-        except DhcpawnError as e:
-            self.errors = e.__str__()
-            self.msg = "Failed host registration"
+            self.data = request.get_json(force=True)
+        except BadRequest as e:
+            self.errors = e.description
+            self.msg = 'check that you actually provided the request info'
             return
+        dtasks_group = []
+        self.drequest.request_type = "Sync Single Host Creation"
+        self.drequest.update_drequest(params=self.data)
 
-        if not host:
-            host = Host(name=self.data.get('hostname'),
-                        mac=self.data.get('mac'),
-                        group=group)
-        else:
-            host.group = group
+        for hkey in self.data:
+            dtasks_group.append(Dtask(self.drequest.id))
+            tinput = {
+                'hkey': hkey,
+                'hdata': self.data[hkey],
+                'dtask_id': dtasks_group[-1].id
+            }
+            Host.single_host_register_track(**tinput)
 
-        if subnet:
-            ip = alloc_single_ip(subnet, ip)
-            host.ip = ip
-        try:
-            db.session.add(host)
-            db.session.commit()
-        except IntegrityError as e:
-            self.errors = e.__str__()
-            self.msg = "failed creating new host (while trying to commit to db). aborting.."
-        else:
-            self.dtask = Dtask(self.drequest.id)
-            self.res = task_host_ldap_add.delay(host.id, self.dtask.id)
-            self.msg = 'host created in db. waiting for ldap update'
-            self.drequest_type = 'create single host'
+        self.drequest.refresh_status()
+        self.msg = 'The Sync Way'
 
     def delete(self):
         """ Delete all host records from db - only used in development mode """
