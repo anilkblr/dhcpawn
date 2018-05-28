@@ -844,6 +844,7 @@ class Host(LDAPModel):
                     host.ldap_delete()
                 except LDAPError as e:
                     if isinstance(e, NO_SUCH_OBJECT):
+                        _logger.error(f"Failed deleting LDAP record {e.__str__()}")
                         pass
                     else:
                         dtask.update(
