@@ -242,7 +242,7 @@ class Host(LDAPModel):
     def validate_new_host_before_registration(**kwargs):
         _logger.debug(f"validating {kwargs}")
         if any(key not in kwargs for key in ['hostname', 'mac', 'group', 'subnet', 'ip']):
-            raise ValidationError("Mandatory hostname, mac or group missing in this record %s" % kwargs)
+            raise ValidationError("Mandatory hostname, mac, group, subnet or ip missing in this record %s" % kwargs)
         try:
             mac = Host._unique_mac(kwargs.get('mac'))
             group = Group.validate_by_name(kwargs.get('group'))
@@ -265,7 +265,6 @@ class Host(LDAPModel):
                             group=group,
                 )
             return host
-
     @staticmethod
     def validate_existing_host_before_registration(**kwargs):
 
@@ -292,7 +291,7 @@ class Host(LDAPModel):
         '''
         rsubnet = kwargs.get('subnet')
         rip = kwargs.get('ip')
-        if rip is None and rsubnet is None:
+        if (rip is None or rip == '') and (rsubnet is None or rsubnet == ''):
             return None, None
 
         if rsubnet:
@@ -310,27 +309,6 @@ class Host(LDAPModel):
         if rip and rsubnet:
             if not IP.ip_in_subnet(rip, rsubnet):
                 raise ValidationError(f"IP {rip} is not in subnet {subnet}")
-
-        # elif rip and rsubnet is None:
-        #     subnet = IP.get_subnet(rip)
-        # elif rip is None and rsubnet:
-        #     subnet = Subnet.validate_by_name(rsubnet)
-        # elif rip and rsubnet:
-        #     subnet = Subnet.validate_by_name(rsubnet)
-        #     if not IP.ip_in_subnet(rip, rsubnet):
-        #         raise ValidationError(f"IP {rip} is not in subnet {subnet}")
-
-        # else: #
-        #     try:
-        #         subnet = Subnet.validate_by_name(rsubnet)
-        #     except ValidationError as e:
-        #         raise BadSubnetName(e.__str__())
-        #     else:
-        #         if not IP.ip_in_subnet(rip, rsubnet):
-        #             raise ValidationError(f"IP {rip} is not in subnet {subnet}")
-
-        # if IP.query.filter_by(address=rip).first():
-        #     raise IPAlreadyExists(f"IP {rip} already in DB")
 
         return subnet, rip
 
