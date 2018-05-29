@@ -250,7 +250,29 @@ class HostAPI(HostBaseAPI):
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
-        self.delete_host(host)
+
+        try:
+            self.data = request.get_json(force=True)
+        except BadRequest as e:
+            self.errors = e.description
+            self.msg = 'check that you actually provided the request info'
+            return
+        dtasks_group = []
+        self.drequest.request_type = "Sync Single Host Deletion"
+        self.drequest.update_drequest(params=self.data)
+
+        for hkey in self.data:
+            dtasks_group.append(Dtask(self.drequest.id))
+            tinput = {
+                'hkey': hkey,
+                'hdata': self.data[hkey],
+                'dtask_id': dtasks_group[-1].id
+            }
+            Host.single_host_delete_track(**tinput)
+
+        self.drequest.refresh_status()
+        self.msg = 'The Sync Way'
+        # self.delete_host(host)
 
 ### GROUP CLASSES
 
