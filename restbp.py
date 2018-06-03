@@ -30,6 +30,8 @@ api.add_url_rule('/multiple/', view_func=mv.MultipleAction.as_view('multiple_act
 
 api.add_url_rule('/hosts/<param>', view_func=mv.HostAPI.as_view('host_api'), methods=['GET', 'PUT', 'DELETE'])
 
+api.add_url_rule('/hosts/re/<hostname>', view_func=mv.HostReAPI.as_view('host_regex_api'), methods=['GET'])
+
 api.add_url_rule('/groups/', view_func=mv.GroupListAPI.as_view('group_list_api'), methods=['GET','POST'])
 api.add_url_rule('/groups/<param>', view_func=mv.GroupAPI.as_view('group_api'), methods=['GET','PUT','DELETE'])
 
