@@ -1728,7 +1728,7 @@ class CalculatedRange(db.Model):
 
 class Req(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    status = db.Column(db.String(20)) # possible values: Fully Completed/Partially Completed/Total Failure/OnGoing
+    status = db.Column(db.String(20)) # possible values: Fully Completed/Partially Completed/Failure/OnGoing
     err_str = db.Column(db.Text, default='')
     request_type = db.Column(db.String(100))
     params = db.Column(db.Text)
@@ -1826,7 +1826,7 @@ class Req(db.Model):
         elif num_passed and not num_failed:
             self.status = 'Fully Completed'
         else:
-            self.status = 'Total Failure'
+            self.status = 'Failure'
         self.commit()
         _logger.debug("Finish request refresh_status")
         # self.clean_on_failure()
