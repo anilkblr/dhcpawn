@@ -165,6 +165,11 @@ class HostBaseAPI(DhcpawnMethodView):
         else:
             raise DhcpawnError('Bad param or no host with param %s' % param)
 
+    def get_host_by_regex(self, hostname):
+        ''' query hosts table and match hostname '''
+
+        return Host.query.filter(Host.name.op('~')(hostname)).all()
+
     def update_host(self, host):
         '''
         used to update an existing host's:
@@ -192,6 +197,21 @@ class HostBaseAPI(DhcpawnMethodView):
         self.res = task_host_ldap_delete.delay(host.id, self.dtask.id)
         self.msg = "Async ldap delete and db delete sent for %s" % host.name
         self.drequest_type = "delete host"
+
+class HostReAPI(HostBaseAPI):
+    ''' for querying hosts by hostname with regex
+
+    :returns: list of hosts
+    '''
+    @gen_resp_deco
+    def get(self, hostname):
+        self.msg = 'get host by regex match'
+        try:
+            hosts = self.get_host_by_regex(hostname)
+        except DhcpawnError as e:
+            self.errors = e.__str__()
+            return
+        self.result = dict(items=[host.config() for host in hosts])
 
 class HostAPI(HostBaseAPI):
     '''
