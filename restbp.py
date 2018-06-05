@@ -1,15 +1,13 @@
 # cob: type=blueprint mountpoint=/rest
 import logbook
-import json
-from ldap import LDAPError, NO_SUCH_OBJECT
 
 from flask import Blueprint, jsonify, request
 from cob import db
 
-from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange
+from .models import Host, Subnet, IP, Dtask, Group
 from . import methodviews as mv
-from .help_functions import get_by_field, extract_skeleton
-from .tasks import *
+from .help_functions import get_by_field
+from .tasks import task_deploy, task_sync_new
 
 _logger = logbook.Logger(__name__)
 api = Blueprint('rest', __name__)

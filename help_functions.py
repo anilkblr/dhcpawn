@@ -1,16 +1,13 @@
-import json
 import re
 import os
-import logbook
-from ldap import SCOPE_SUBTREE
 from ipaddress import IPv4Address, IPv4Network
 from functools import wraps
-
+import logbook
+from ldap import SCOPE_SUBTREE
 from flask import jsonify, current_app
 from sqlalchemy.exc import IntegrityError
 from celery.result import AsyncResult
 from cob import db
-from cob.project import get_project
 
 _logger = logbook.Logger(__name__)
 ##### Helping functions ########
@@ -62,7 +59,7 @@ class SyncError(DhcpawnError):
 
 def get_by_id(model, model_id):
 
-    toreturn =  model.query.get(model_id)
+    toreturn = model.query.get(model_id)
     if not toreturn:
         raise DhcpawnError(f"{model.__name__} with id {str(model_id)} does not exist in db")
     return toreturn
@@ -78,11 +75,11 @@ def get_by_field(model, field, value):
     """
 
     fieldDict = {
-        'name':    model.query.filter_by(name=value) if field=='name' else None,
-        'address': model.query.filter_by(address=value) if field=='address' else None,
-        'id':      model.query.filter_by(id=value) if field=='id' else None,
-        'mac':     model.query.filter_by(mac=value) if field=='mac' else None,
-        'duptype': model.query.filter_by(duptype=value) if field=='duptype' else None,
+        'name':    model.query.filter_by(name=value) if field == 'name' else None,
+        'address': model.query.filter_by(address=value) if field == 'address' else None,
+        'id':      model.query.filter_by(id=value) if field == 'id' else None,
+        'mac':     model.query.filter_by(mac=value) if field == 'mac' else None,
+        'duptype': model.query.filter_by(duptype=value) if field == 'duptype' else None,
         }
     try:
         rv = fieldDict[field].all() if field == 'duptype' else fieldDict[field].first()
@@ -91,7 +88,7 @@ def get_by_field(model, field, value):
     except IntegrityError:
         raise DhcpawnError("%s %s does not exist" % (model.__name__, value))
 
-    if rv == None:
+    if rv is None:
         raise DhcpawnError("%s with %s=%s does not exist" % (model.__name__, field, value))
 
     return rv
@@ -112,19 +109,11 @@ def gen_resp(drequest=None, result=None, errors=None, msg=None):
     for now i just removed it from the returned json'''
 
     if drequest:
-        current_req =  drequest.query.filter_by(id=drequest.id).first()
+        current_req = drequest.query.filter_by(id=drequest.id).first()
 
     if drequest and current_req:
-        if errors:
-            status = 'Failed'
-        else:
-            status = current_req.status
-            if not result:
-                result = current_req.config()
-    elif errors:
-        status = 'Failed'
-    else:
-        status = 'Done'
+        if not errors and not result:
+            result = current_req.config()
 
     returned = {
         'result': result,
@@ -216,8 +205,7 @@ def parse_ldap_entry(entry):
     tmpd[cn] = {'dn': dn,
                 'ip': dhcpStatements,
                 'mac': dhcpHWAddress,
-                'objClass': objectClass
-    }
+                'objClass': objectClass}
     return tmpd
 
 
@@ -226,13 +214,11 @@ def extract_skeleton():
     '''
     use this function to extract LDAP skeleton for first dhcpawn deployment
     '''
-    config = get_project().config
     skeleton = {'groups':[],
                 'subnets':{},
                 'dhcpranges':{},
                 'pools':{},
-                'calcranges':{},
-                }
+                'calcranges':{}}
     basedn = os.getenv('_DHCPAWN_PRODUCTION_LDAP_DN')
     rawdata = current_app.ldap_obj.search_s(basedn, SCOPE_SUBTREE, '(objectClass=*)')
 
@@ -251,24 +237,26 @@ def extract_skeleton():
             if e[1].get('dhcpOption'):
                 for item in e[1]['dhcpOption']:
                     if item.decode('utf-8').startswith('routers'):
-                        routers = ','.join(item.decode('utf-8').replace(",","").split(" ")[1:]) # taking only the default gateway ip , excluding the "routers" word.
+                        # taking only the default gateway ip , excluding the "routers" word.
+                        routers = ','.join(item.decode('utf-8').replace(",", "").split(" ")[1:])
             if e[1].get('dhcpStatements'):
                 for item in e[1]['dhcpStatements']:
                     search_ddns_statement = re.search('ddns-domainname (.+)', item.decode('utf-8'))
                     if search_ddns_statement is not None:
-                        ddns_domainname = search_ddns_statement.group(1).replace("\"","")
+                        ddns_domainname = search_ddns_statement.group(1).replace("\"", "")
             options = {
                 'dhcpComments': [e[1]['dhcpComments'][0].decode('utf-8')],
                 'dhcpStatements': ['ddns-domainname %s' % ddns_domainname],
                 'dhcpOption': ['routers %s' % routers]
             }
             skeleton['subnets'].update({name: {'netmask':netmask, 'options':options}})
-            # subnets += yaml.dump([{'url': url, 'data': {'name':name, 'netmask':netmask, 'options':options, 'deployed':deploy}}])
+            # subnets += yaml.dump([{'url': url, 'data': {'name':name, 'netmask':netmask,
+            # 'options':options, 'deployed':deploy}}])
             s[name] = {'netmask':netmask}
 
         elif 'dhcpPool' in [el.decode('utf-8') for el in e[1]['objectClass']]:
             name = e[1]['cn'][0].decode('utf-8')
-            subnet_name = e[0].replace(",","").split("cn=")[2]
+            subnet_name = e[0].replace(",", "").split("cn=")[2]
             skeleton['pools'].update({name: {'subnet_name':subnet_name}})
 
             min_dhcprange = e[1]['dhcpRange'][0].split()[0].decode('utf-8')
@@ -285,18 +273,20 @@ def extract_skeleton():
         smask = s[sub]['netmask']
         mind = p[sub]['mindhcp']
         maxd = p[sub]['maxdhcp']
-        lastip = list(IPv4Network("%s/%s" % (sname,smask)).hosts())[-1]
-        ranges = [[IPv4Address(sname)+1,IPv4Address(mind)-1], [IPv4Address(maxd)+1, lastip]]
+        lastip = list(IPv4Network("%s/%s" % (sname, smask)).hosts())[-1]
+        ranges = [[IPv4Address(sname)+1, IPv4Address(mind)-1], [IPv4Address(maxd)+1, lastip]]
         skeleton['calcranges'].setdefault(sname, [])
         # lower range
         if ranges[0][1] > ranges[0][0]:
-            skeleton['calcranges'][sname].append({'min':str(ranges[0][0]),'max':str(ranges[0][1])})
+            skeleton['calcranges'][sname].append({'min':str(ranges[0][0]), 'max':str(ranges[0][1])})
             # skeleton['calcranges'].update({sname: {'min':str(ranges[0][0]),'max':str(ranges[0][1])}})
-            # calcranges += yaml.dump([{'url':'/rest/calcranges/', 'data': {'subnet_name':sname, 'min':str(ranges[0][0]),'max':str(ranges[0][1]), 'deployed':deploy}}])
+            # calcranges += yaml.dump([{'url':'/rest/calcranges/', 'data': {'subnet_name':sname,
+            # 'min':str(ranges[0][0]),'max':str(ranges[0][1]), 'deployed':deploy}}])
         # upper range
         if ranges[1][1] > ranges[1][0]:
-            skeleton['calcranges'][sname].append({'min':str(ranges[1][0]),'max':str(ranges[1][1])})
+            skeleton['calcranges'][sname].append({'min':str(ranges[1][0]), 'max':str(ranges[1][1])})
             # skeleton['calcranges'].update({sname: {'min':str(ranges[1][0]),'max':str(ranges[1][1])}})
-            # calcranges += yaml.dump([{'url':'/rest/calcranges/', 'data': {'subnet_name':sname, 'min':str(ranges[1][0]),'max':str(ranges[1][1]), 'deployed':deploy}}])
+            # calcranges += yaml.dump([{'url':'/rest/calcranges/', 'data': {'subnet_name':sname,
+            # 'min':str(ranges[1][0]),'max':str(ranges[1][1]), 'deployed':deploy}}])
 
     return skeleton

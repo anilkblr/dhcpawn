@@ -1,21 +1,21 @@
 # cob: type=models
-import logbook
 import json
+from ipaddress import IPv4Address, IPv4Network
 import requests
-import ldap
-from time import sleep
+import logbook
 
 from flask import current_app
-from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, ALREADY_EXISTS, \
-    LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN, LDAPError
-from ipaddress import IPv4Address, IPv4Network
+from ldap import modlist, SCOPE_SUBTREE, NO_SUCH_OBJECT, LDAPError
+
 from sqlalchemy_utils import IPAddressType
 from sqlalchemy.exc import IntegrityError
 from cob import db
 
-from .ldap_utils import server_dn
+# from .ldap_utils import server_dn
 from .help_functions import _get_or_none, get_by_field, parse_ldap_entry, extract_skeleton
-from .help_functions import *
+from .help_functions import DhcpawnError, ValidationError, IPAlreadyExists, BadSubnetName,\
+    DoNothingRecordExists, DuplicateError, ConflictingParamsError, DoNothingRecordNotInDB,\
+    InputValidationError
 
 _logger = logbook.Logger(__name__)
 
@@ -30,7 +30,7 @@ def gen_modlist(obj_dict, options):
                 if isinstance(o, str):
                     boptions[option].append(o.encode('utf-8'))
                 elif isinstance(o, list):
-                    tmpl= []
+                    tmpl = []
                     for _o in o:
                         tmpl.append(_o.encode('utf-8'))
                     boptions[option].append(tmpl)
@@ -61,23 +61,18 @@ class LDAPModel(db.Model):
         '''
         if cmd_type == 'add':
             ldapcmd = current_app.ldap_obj.add_s
-            ldapstr = 'ldap_add'
             ldapcmd_args = modlist.addModlist(self.modlist())
         elif cmd_type == 'delete':
             ldapcmd = current_app.ldap_obj.delete_s
-            ldapstr = 'ldap_delete'
             ldapcmd_args = None
         elif cmd_type == 'get':
             ldapcmd = current_app.ldap_obj.search_s
-            ldapstr = 'ldap_get'
             ldapcmd_args = SCOPE_SUBTREE
         else:
             raise DhcpawnError(f"Wrong command type given {cmd_type}")
         if not dn:
             dn = self.dn()
         if self.deployed:
-            exc_type_list = []
-            tries = 0
             e = None
             try:
                 if ldapcmd_args is None:
@@ -114,19 +109,19 @@ class LDAPModel(db.Model):
 
     def ldap_modify(self, dn=None):
         raise RuntimeError("prevent ldap_modify from running")
-        if not dn:
-            dn = self.dn()
-        _logger.debug("Modify LDAP entry: %s" % dn)
-        if self.deployed:
-            try:
-                # data taken from ldap
-                objs = current_app.ldap_obj.search_s(dn, SCOPE_BASE)
-                _logger.debug("Current data in DB: %s" % self.config())
-                _logger.debug("Current DN in LDAP: %s" % str(objs[0][1]))
-                if objs[0][1] != dict(self.modlist()):
-                    current_app.ldap_obj.modify_s(dn, modlist.modifyModlist(objs[0][1], dict(self.modlist())))
-            except NO_SUCH_OBJECT:
-                self.ldap_add()
+        # if not dn:
+        #     dn = self.dn()
+        # _logger.debug("Modify LDAP entry: %s" % dn)
+        # if self.deployed:
+        #     try:
+        #         # data taken from ldap
+        #         objs = current_app.ldap_obj.search_s(dn, SCOPE_BASE)
+        #         _logger.debug("Current data in DB: %s" % self.config())
+        #         _logger.debug("Current DN in LDAP: %s" % str(objs[0][1]))
+        #         if objs[0][1] != dict(self.modlist()):
+        #             current_app.ldap_obj.modify_s(dn, modlist.modifyModlist(objs[0][1], dict(self.modlist())))
+        #     except NO_SUCH_OBJECT:
+        #         self.ldap_add()
 
 
     @classmethod
@@ -164,7 +159,7 @@ class Host(LDAPModel):
     def dn(self):
         if self.group_id:
             return 'cn=%s,%s' % (self.name, self.group.dn())
-        return 'cn=%s,ou=Hosts,%s' % (self.name, server_dn())
+        # return 'cn=%s,ou=Hosts,%s' % (self.name, server_dn())
 
     def modlist(self):
         options = json.loads(self.options) if self.options else {}
@@ -173,9 +168,10 @@ class Host(LDAPModel):
                 options['dhcpStatements'] = []
             options['dhcpStatements'] += ['fixed-address %s' % str(self.ip.address)]
             options = json.dumps(options)
-        return gen_modlist(dict(objectClass=[b'dhcpHost', b'top'],
-                dhcpHWAddress=[b'ethernet %s' % self.mac.encode('utf-8')],
-                cn=[self.name.encode('utf-8')]), options)
+        return gen_modlist(dict(objectClass=[b'dhcpHost', b'top'], \
+                                dhcpHWAddress=[b'ethernet %s' % \
+                                               self.mac.encode('utf-8')], \
+                                cn=[self.name.encode('utf-8')]), options)
 
     def config(self):
         return dict(id=self.id,
@@ -220,7 +216,8 @@ class Host(LDAPModel):
         host = Host.query.filter_by(name=kwargs.get('hostname')).first()
         if host and host.group.name == kwargs.get('group'):
             # if host.name == 'box-sivan-test-nas1-1':
-            if host.ip and (host.ip.address.compressed == kwargs.get('ip') or kwargs.get('ip') is None and host.ip.address.compressed):
+            if host.ip and (host.ip.address.compressed == kwargs.get('ip') \
+                            or kwargs.get('ip') is None and host.ip.address.compressed):
                 return True
 
         return False
@@ -230,7 +227,7 @@ class Host(LDAPModel):
         # kwargs are expected to be identical to the actual record
         # in DB. otherwise we can't know we delete the right host.
         host = Host.query.filter_by(name=kwargs.get('hostname')).first()
-        if not host :
+        if not host:
             raise DoNothingRecordNotInDB(f"host by hostname {kwargs.get('hostname')} not in DB.")
 
         if not Host._check_identical(host, **kwargs):
@@ -256,14 +253,12 @@ class Host(LDAPModel):
                 host = Host(name=kwargs.get('hostname'),
                             mac=mac,
                             group_id=group.id,
-                            ip=Subnet.alloc_single_ip(subnet, ip)
-                )
+                            ip=Subnet.alloc_single_ip(subnet, ip))
 
             else:
                 host = Host(name=kwargs.get('hostname'),
                             mac=mac,
-                            group=group,
-                )
+                            group=group)
             return host
     @staticmethod
     def validate_existing_host_before_registration(**kwargs):
@@ -284,8 +279,10 @@ class Host(LDAPModel):
     @staticmethod
     def _ip_subnet_validation(**kwargs):
         ''' there are 4 options for subnet,ip existance in request:
-        00 - subnet/ip not in request - nothing to do ,no ip allocation (this is not supported, at least subnet shoudl be part )
-        01 - only ip in request ,check its not taken and later find its subnet and update host with both after allocation
+        00 - subnet/ip not in request - nothing to do ,no ip allocation
+             (this is not supported, at least subnet shoudl be part )
+        01 - only ip in request ,check its not taken and later
+             find its subnet and update host with both after allocation
         10 - validate subnet by name and allocate ip in it
         11 - check if ip is taken and if ip is in subnet
         '''
@@ -334,7 +331,7 @@ class Host(LDAPModel):
 
         if not host.subnet() == kwargs.get('subnet') or (not host.ip == kwargs.get('ip')):
             try:
-                subnet, ip = Host._ip_subnet_validation(**kwargs)
+                _, _ = Host._ip_subnet_validation(**kwargs)
             except BadSubnetName as e:
                 raise ValidationError(e.__str__())
             except IPAlreadyExists as e:
@@ -363,12 +360,12 @@ class Host(LDAPModel):
 
     @staticmethod
     def _check_identical(host, **kwargs):
-        if (host.name == kwargs.get('hostname') and
-            host.mac == kwargs.get('mac') and
-            host.group == kwargs.get('group') and
-            (host.subnet() == kwargs.get('subnet') or
-             (host.subnet() is None and kwargs.get('subnet') == 'None')) and
-            host.ip == kwargs.get('ip')):
+        if host.name == kwargs.get('hostname') and \
+            host.mac == kwargs.get('mac') and \
+            host.group == kwargs.get('group') and \
+            (host.subnet() == kwargs.get('subnet') or \
+             (host.subnet() is None and kwargs.get('subnet') == 'None')) and \
+            host.ip == kwargs.get('ip'):
             return True
 
         return False
@@ -391,7 +388,8 @@ class Host(LDAPModel):
                 # both hostname and mac exist in DB and belong to the same entry.
                 return host_by_hostname
             else:
-                raise InputValidationError("hostname %s and mac %s belong to two different entries in DB " % (hostname, mac) )
+                raise InputValidationError("hostname %s and mac %s \
+                belong to two different entries in DB " % (hostname, mac))
         elif not host_by_hostname and not host_by_mac:
             # no record in DB with this hostname or mac
             return None
@@ -406,8 +404,12 @@ class Host(LDAPModel):
                 found_duplication_desc += f" Existing host in DB with mac {mac}. the hostname is {host_by_mac.name}"
                 duptype = 'mac'
 
-            Duplicate(f"Verifying {hostname} and {mac}. Found {found_duplication_desc}", duptype)
-        _logger.error("hostname/mac coupling check failed. only one of them exist in DB (host_by_hostname: %s, host_by_mac: %s " % (host_by_hostname, host_by_mac))
+            Duplicate(f"Verifying {hostname} and {mac}. \
+            Found {found_duplication_desc}", duptype)
+
+        _logger.error("hostname/mac coupling check failed. \
+        only one of them exist in DB (host_by_hostname: %s, host_by_mac: %s " % \
+                      (host_by_hostname, host_by_mac))
         raise DuplicateError("Found duplication")
 
     @staticmethod
@@ -422,58 +424,58 @@ class Host(LDAPModel):
             raise
         return host, group
 
-    @staticmethod
-    def ip_subnet_validation(**kwargs):
-        req_subnet = kwargs.get('subnet')
-        req_ip = kwargs.get('ip')
-        h = Host.get_by_hostname(kwargs.get('hostname'))
-        if host:
-        # first check if we already have the host in DB with
-        # the required ip
-            if host.ip:
-                if host.ip.address.commpressed == req_ip:
-                    ip = host.ip
+    # @staticmethod
+    # def ip_subnet_validation(**kwargs):
+    #     req_subnet = kwargs.get('subnet')
+    #     req_ip = kwargs.get('ip')
+    #     h = Host.get_by_hostname(kwargs.get('hostname'))
+    #     if host:
+    #     # first check if we already have the host in DB with
+    #     # the required ip
+    #         if host.ip:
+    #             if host.ip.address.commpressed == req_ip:
+    #                 ip = host.ip
 
-                    if req_subnet:
-                        subnet = Subnet.validate_by_name(req_subnet)
-                else:
-                    subnet = IP.get_subnet(req_ip)
-            return ip, subnet
+    #                 if req_subnet:
+    #                     subnet = Subnet.validate_by_name(req_subnet)
+    #             else:
+    #                 subnet = IP.get_subnet(req_ip)
+    #         return ip, subnet
 
-        if req_subnet and req_ip: # TODO verify that ip in subnet and not taken
-            try:
-                IP.is_ip_taken(req_ip)
-            except ValidationError:
-                raise
-            else:
-                try:
-                    if IP.ip_in_subnet(req_ip, req_subnet):
-                        ip = req_ip
-                        subnet = Subnet.validate_by_name(req_subnet)
-                    else:
-                        raise ValidationError("IP %s does not belong to subnet %s" % (req_ip, req_subnet))
-                except DhcpawnError:
-                    raise
-        elif req_subnet and not req_ip: # TODO just verify subnet and ip will be allocated
-            try:
-                subnet = Subnet.validate_by_name(req_subnet)
-            except ValidationError:
-                raise
-            else:
-                ip = "allocate"
-        elif not req_subnet and req_ip: # TODO check if ip taken and if not ,calulate subnet and allocate
-            try:
-                IP.is_ip_taken(req_ip)
-            except ValidationError:
-                raise
-            else:
-                ip = req_ip
-                subnet = IP.get_subnet(req_ip)
-        else:
-            subnet = None
-            ip = None
+    #     if req_subnet and req_ip: # todo verify that ip in subnet and not taken
+    #         try:
+    #             IP.is_ip_taken(req_ip)
+    #         except ValidationError:
+    #             raise
+    #         else:
+    #             try:
+    #                 if IP.ip_in_subnet(req_ip, req_subnet):
+    #                     ip = req_ip
+    #                     subnet = Subnet.validate_by_name(req_subnet)
+    #                 else:
+    #                     raise ValidationError("IP %s does not belong to subnet %s" % (req_ip, req_subnet))
+    #             except DhcpawnError:
+    #                 raise
+    #     elif req_subnet and not req_ip: # todo just verify subnet and ip will be allocated
+    #         try:
+    #             subnet = Subnet.validate_by_name(req_subnet)
+    #         except ValidationError:
+    #             raise
+    #         else:
+    #             ip = "allocate"
+    #     elif not req_subnet and req_ip: # todo check if ip taken and if not ,calulate subnet and allocate
+    #         try:
+    #             IP.is_ip_taken(req_ip)
+    #         except ValidationError:
+    #             raise
+    #         else:
+    #             ip = req_ip
+    #             subnet = IP.get_subnet(req_ip)
+    #     else:
+    #         subnet = None
+    #         ip = None
 
-        return ip, subnet
+    #     return ip, subnet
 
     # @staticmethod
     # def single_input_validate_before_registration(*args, **kwargs):
@@ -519,7 +521,9 @@ class Host(LDAPModel):
 
         if Host.query.filter(Host.mac == kwargs.get('mac')).all():
             existing_hosts = Host.query.filter(Host.mac == kwargs.get('mac')).all()
-            Duplicate(f"A host with this MAC {(kwargs.get('mac'))} already exists {[e.name for e in existing_hosts]} while trying to create host {kwargs.get('hostname')}", 'mac')
+            Duplicate(f"A host with this MAC {(kwargs.get('mac'))} already exists \
+            {[e.name for e in existing_hosts]} while trying to create host \
+            {kwargs.get('hostname')}", 'mac')
             raise DhcpawnError('Duplicate MAC (%s) ' % kwargs.get('mac'))
 
         name=kwargs.get('hostname')
@@ -672,7 +676,6 @@ class Host(LDAPModel):
 
         host = Host.query.get(hid)
         dtask = Dtask.query.get(dtask_id)
-        err_str = ''
         try:
             host.ldap_add()
         except LDAPError:
@@ -706,8 +709,6 @@ class Host(LDAPModel):
 
         host = Host.query.get(hid)
         dtask = Dtask.query.get(dtask_id)
-        err_str = ''
-
         try:
             _logger.info(f"deleting host {host.name} from ldap")
             host.ldap_delete()
@@ -788,7 +789,7 @@ class Host(LDAPModel):
     #                     desc= f"Failed DB commit for host {host}",
     #                     err_str= e.__str__(),
     #                 )
-    #                 # TODO: still need to remove record from ldap or
+    #                 # todo: still need to remove record from ldap or
     #                 # something like that becuase commiting host to DB failed
     #                 db.session.delete(host.ip)
     #                 db.session.commit()
@@ -823,7 +824,6 @@ class Host(LDAPModel):
                 except LDAPError as e:
                     if isinstance(e, NO_SUCH_OBJECT):
                         _logger.error(f"Failed deleting LDAP record {e.__str__()}")
-                        pass
                     else:
                         dtask.update(
                             status= 'failed',
@@ -1061,9 +1061,9 @@ class Group(LDAPModel):
     options = db.Column(db.Text)
     deployed = db.Column(db.Boolean, default=True)
 
-    def dn(self):
-        # return 'cn=%s,ou=Groups,%s' % (self.name, server_dn())
-        return 'cn=%s,%s' % (self.name, server_dn())
+    # def dn(self):
+    #     # return 'cn=%s,ou=Groups,%s' % (self.name, server_dn())
+    #     return 'cn=%s,%s' % (self.name, server_dn())
 
     def modlist(self):
         return gen_modlist(dict(objectClass=[b'dhcpGroup', b'top'],
@@ -1200,9 +1200,8 @@ class Group(LDAPModel):
         d = {self.name: {'group is synced':True, 'info':{}}}
         try:
             d = self.get_sync_stat()
-        except LDAPError as e:
+        except LDAPError:
             d[self.name]['group is synced'] = False
-            pass
         for g in d:
             if d[g]['group is synced']:
                 return d, None
@@ -1290,7 +1289,6 @@ class Group(LDAPModel):
                 ldap_entry = hst.ldap_get(parse=True)
             except NO_SUCH_OBJECT:
                 ldap_entry = None
-                pass
 
             if not ldap_entry:
                 _logger.debug("Host - %s - in DB but not in LDAP" % db_entry['name'])
@@ -1373,10 +1371,10 @@ class Subnet(LDAPModel):
     calcranges = db.relationship('CalculatedRange', backref='subnet', lazy='dynamic', uselist=True)
     deployed = db.Column(db.Boolean, default=True)
 
-    def dn(self):
+    # def dn(self):
 
-        # return 'cn=%s,ou=Subnets,%s' % (self.name, server_dn())
-        return 'cn=%s,%s' % (self.name, server_dn())
+    #     # return 'cn=%s,ou=Subnets,%s' % (self.name, server_dn())
+    #     return 'cn=%s,%s' % (self.name, server_dn())
 
     def __repr__(self):
         return f"{json.loads(self.options).get('dhcpComments')[0]}"
@@ -1889,12 +1887,10 @@ class Req(db.Model):
         self.commit()
 
     def commit(self):
-        try:
-            db.session.add(self)
-            db.session.commit()
-            _logger.debug("dreq %s was updated in DB" % self.id)
-        except Exception as e:
-            _logger.error(f"Failed commiting dreq {self}")
+
+        db.session.add(self)
+        db.session.commit()
+        _logger.debug("dreq %s was updated in DB" % self.id)
 
 
 class Dtask(db.Model):

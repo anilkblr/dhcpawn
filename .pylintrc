@@ -1,8 +1,8 @@
 [MESSAGES CONTROL]
-disable=R,C, attribute-defined-outside-init
+disable=R, attribute-defined-outside-init, unused-argument, fixme, missing-docstring, invalid-name, too-many-lines
 
 [FORMAT]
-max-line-length=150
+max-line-length=120
 
 [TYPECHECK]
 ignored-modules=cob,ldap

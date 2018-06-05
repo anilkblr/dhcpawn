@@ -1,21 +1,19 @@
 import re
-import logbook
 import json
-import gossip
-from sqlalchemy import desc
-from sqlalchemy.orm import joinedload
+from ipaddress import IPv4Address
 from flask import jsonify, request, url_for
 from flask.views import MethodView
-from ipaddress import IPv4Address
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from werkzeug.exceptions import BadRequest
 from celery import chain
 from cob import db
-from raven.contrib.flask import Sentry
+from sqlalchemy import desc
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import joinedload
+import logbook
 
 from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
 from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
-from .tasks import *
+from .tasks import task_single_input_registration, task_update_drequest, task_send_postreply, task_single_input_deletion
 
 
 _logger = logbook.Logger(__name__)
@@ -66,7 +64,8 @@ class DRequestAPI(DRequestBaseAPI):
         try:
             req = self.get_drequest_by_param(param)
         except DhcpawnError as e:
-            self.msg = 'Please make sure the id exists. to see all requests please use this link: %s' % url_for('rest.dhcpawn_request_list_api', _external=True)
+            self.msg = 'Please make sure the id exists. to see all requests please use this link: %s' % \
+                url_for('rest.dhcpawn_request_list_api', _external=True)
             self.errors = e.__str__()
             return
 
@@ -98,7 +97,8 @@ class DtaskAPI(DtaskBaseAPI):
         try:
             dtask = self.get_dtask_by_param(param)
         except DhcpawnError as e:
-            self.msg = 'Please make sure the id exists. to see all dtasks please use this link: %s' % url_for('rest.dhcpawn_dtask_list_api', _external=True)
+            self.msg = 'Please make sure the id exists. to see all dtasks please use this link: %s' % \
+                url_for('rest.dhcpawn_dtask_list_api', _external=True)
             self.errors = e.__str__()
             return
 
@@ -170,33 +170,34 @@ class HostBaseAPI(DhcpawnMethodView):
 
         return Host.query.filter(Host.name.op('~')(hostname)).all()
 
-    def update_host(self, host):
-        '''
-        used to update an existing host's:
-        1. ip
-        2. group
-        3. options
-        '''
-        try:
-            new_group_id, new_address_id = host.update(**self.data)
-        except DhcpawnError as e:
-            self.errors = e.__str__()
-            return
+    # def update_host(self, host):
+    #     '''
+    #     used to update an existing host's:
+    #     1. ip
+    #     2. group
+    #     3. options
+    #     '''
+    #     try:
+    #         new_group_id, new_address_id = host.update(**self.data)
+    #     except DhcpawnError as e:
+    #         self.errors = e.__str__()
+    #         return
 
-        self.dtask = Dtask(self.drequest.id)
-        self.res = task_host_ldap_modify.delay(host.id, self.dtask.id, new_group_id=new_group_id, new_address_id=new_address_id)
-        self.msg = "Sent async ldap modify and db update on %s" % host.name
-        self.drequest_type = "host update"
+    #     self.dtask = Dtask(self.drequest.id)
+    #     self.res = task_host_ldap_modify.delay(host.id, self.dtask.id, \
+    #                new_group_id=new_group_id, new_address_id=new_address_id)
+    #     self.msg = "Sent async ldap modify and db update on %s" % host.name
+    #     self.drequest_type = "host update"
 
-    def delete_host(self, host):
-        """
-        method will receive a host instance
-        rather then id or name
-        """
-        self.dtask = Dtask(self.drequest.id)
-        self.res = task_host_ldap_delete.delay(host.id, self.dtask.id)
-        self.msg = "Async ldap delete and db delete sent for %s" % host.name
-        self.drequest_type = "delete host"
+    # def delete_host(self, host):
+    #     """
+    #     method will receive a host instance
+    #     rather then id or name
+    #     """
+    #     self.dtask = Dtask(self.drequest.id)
+    #     self.res = task_host_ldap_delete.delay(host.id, self.dtask.id)
+    #     self.msg = "Async ldap delete and db delete sent for %s" % host.name
+    #     self.drequest_type = "delete host"
 
 class HostReAPI(HostBaseAPI):
     ''' for querying hosts by hostname with regex
@@ -233,7 +234,7 @@ class HostAPI(HostBaseAPI):
     def put(self, param):
         self.drequest_type = 'modify host'
         try:
-            host = self.get_host_by_param(param)
+            self.get_host_by_param(param)
         except DhcpawnError as e:
             self.errors = e.__str__()
             self.msg = 'did not get to the modify part. failed on getting the host to modify'
@@ -264,9 +265,9 @@ class HostAPI(HostBaseAPI):
 
     @gen_resp_deco
     @update_req
-    def delete(self,param):
+    def delete(self, param):
         try:
-            host = self.get_host_by_param(param)
+            self.get_host_by_param(param)
         except DhcpawnError as e:
             self.errors = e.__str__()
             return
@@ -333,7 +334,7 @@ class GroupBaseAPI(DhcpawnMethodView):
         2. name starting with a letter and could contain numbers and some special chars
         '''
         self.patterns = {k: patterns[k] for k in ('id', 'name')}
-        group = identify_param(Group ,param, self.patterns)
+        group = identify_param(Group, param, self.patterns)
         if group:
             return group
         else:
@@ -426,7 +427,7 @@ class SubnetListAPI(DhcpawnMethodView):
         self.msg = "Create new subnet"
         _logger.debug("SubnetListAPI")
         data = request.get_json(force=True)
-        if any(key not in data for key in ['name','netmask']):
+        if any(key not in data for key in ['name', 'netmask']):
             self.errors = "Subnet requires name and netmask"
             return
         try:
@@ -439,7 +440,7 @@ class SubnetListAPI(DhcpawnMethodView):
 
         subnet = Subnet(name=data.get('name'),
                         netmask=data.get('netmask'),
-                        options=json.dumps(data.get('options',{})),
+                        options=json.dumps(data.get('options', {})),
                         deployed=data.get('deployed'))
         db.session.add(subnet)
         db.session.commit()
@@ -455,7 +456,7 @@ class SubnetBaseAPI(DhcpawnMethodView):
         2. name starting with a letter and could contain numbers and some special chars
         '''
         self.patterns = {k: patterns[k] for k in ('id', 'name')}
-        subnet = identify_param(Subnet ,param, self.patterns)
+        subnet = identify_param(Subnet, param, self.patterns)
         if subnet:
             return subnet
         else:
@@ -605,7 +606,7 @@ class IPBaseAPI(DhcpawnMethodView):
         2. address starting with a letter and could contain numbers and some special chars
         '''
         self.patterns = {k: patterns[k] for k in ('id', 'address')}
-        ip = identify_param(IP ,param, self.patterns)
+        ip = identify_param(IP, param, self.patterns)
         if ip:
             return ip
         else:
@@ -672,18 +673,18 @@ class IPAPI(IPBaseAPI):
         ip.ldap_add()
         self.result = ip.config()
 
-    @gen_resp_deco
-    def delete(self, param):
-        self.msg = "delete ip by param %s" % param
-        _logger.debug("IPAPI")
-        ip = self.get_ip_by_param(param)
-        # 1. host.delete_ip (ldap and DB)
-        # 2. ip.delete (DB)
-        self.dtask = Dtask(self.drequest.id)
-        self.res = task_host_ldap_modify.delay(ip.host.id,
-                                               self.dtask.id,
-                                               new_address_id='clear')
-        self.msg = 'IP deletion async processing started.'
+    # @gen_resp_deco
+    # def delete(self, param):
+    #     self.msg = "delete ip by param %s" % param
+    #     _logger.debug("IPAPI")
+    #     ip = self.get_ip_by_param(param)
+    #     # 1. host.delete_ip (ldap and DB)
+    #     # 2. ip.delete (DB)
+    #     self.dtask = Dtask(self.drequest.id)
+    #     self.res = task_host_ldap_modify.delay(ip.host.id,
+    #                                            self.dtask.id,
+    #                                            new_address_id='clear')
+    #     self.msg = 'IP deletion async processing started.'
 
 # DHCP CLASSES
 
@@ -832,9 +833,9 @@ class PoolListAPI(DhcpawnMethodView):
             subnet_id = subnet.id
 
         pool = Pool(name=data.get('name'),
-                subnet_id=subnet_id,
-                options=json.dumps(data.get('options', {})),
-                deployed=False)
+                    subnet_id=subnet_id,
+                    options=json.dumps(data.get('options', {})),
+                    deployed=False)
 
         subnet = get_by_id(Subnet, pool.subnet_id)
 
@@ -903,7 +904,7 @@ class PoolAPI(DhcpawnMethodView):
 # Duplicate Class
 class DuplicateBaseAPI(DhcpawnMethodView):
     def get_duplicate_by_param(self, param):
-        self.patterns = {k: patterns[k] for k in ('duptype','id')}
+        self.patterns = {k: patterns[k] for k in ('duptype', 'id')}
         dup = identify_param(Duplicate, param, self.patterns)
         if isinstance(dup, list):
             self.result = [d.config() for d in dup]
@@ -911,7 +912,10 @@ class DuplicateBaseAPI(DhcpawnMethodView):
             self.result = dup.config()
         else:
             self.errors = f"Wrong parameter {param} or no dhcpawn request with this parameter"
-            self.msg = f"Please make sure this duplicate type exists. to see all duplicates please use this url: {url_for('rest.dhcpawn_duplicate_list_api', _external=True)}"
+            self.msg = f"Please make sure this duplicate type exists. \
+            to see all duplicates please use this url: \
+            {url_for('rest.dhcpawn_duplicate_list_api', _external=True)}"
+
             raise DhcpawnError(self.errors)
 
 class DuplicateAPI(DuplicateBaseAPI):
@@ -954,7 +958,7 @@ class DuplicateListAPI(DhcpawnMethodView):
     @gen_resp_deco
     def get(self):
         self.result = [duplicate.config() if duplicate.valid
-                        else None for duplicate in Duplicate.query.all()]
+                       else None for duplicate in Duplicate.query.all()]
         self.msg = "get all duplicates"
 
 ###### Help functions
@@ -988,13 +992,13 @@ class MultipleAction(DhcpawnMethodView):
             deploy = self.data.get('deploy')
             del self.data['deploy']
         if 'reply_url' in self.data:
-            self.drequest.update_drequest(drequest_reply_url = self.data.get('reply_url'))
+            self.drequest.update_drequest(drequest_reply_url=self.data.get('reply_url'))
             del self.data['reply_url']
         if 'sync' in self.data and self.data.get('sync') == 'true':
             sync = True
             self.drequest.request_type = "Sync Multiple Registration"
             del self.data['sync']
-        if deploy.lower()=="true":
+        if deploy.lower() == "true":
             # _logger.debug("DEPLOY=%s" % deploy)
             # _logger.info(f"Data size: {len(self.data)}")
             # this is the day to day part of the code
@@ -1026,7 +1030,7 @@ class MultipleAction(DhcpawnMethodView):
                 refresh_request_job = task_update_drequest.s(**tinput)
                 post_reply_job = task_send_postreply.s(**tinput)
                 full_chain = chain(register_chain, refresh_request_job, post_reply_job)
-                res = full_chain.apply_async()
+                full_chain.apply_async()
                 self.msg = f"Registration to DB Finished. ldap async part is running. stay tuned.. {self.res}"
 
     @gen_resp_deco
@@ -1036,16 +1040,12 @@ class MultipleAction(DhcpawnMethodView):
         self.drequest.request_type = "Async Multiple Deletion"
         self.data = request.get_json(force=True)
         self.drequest.update_drequest(params=self.data)
-        hard = False
         sync = False
         if 'deploy' in self.data:
             del self.data['deploy']
         if 'reply_url' in self.data:
-            self.drequest.update_drequest(drequest_reply_url = self.data.get('reply_url'))
+            self.drequest.update_drequest(drequest_reply_url=self.data.get('reply_url'))
             del self.data['reply_url']
-        # if 'hard' in self.data:
-            # del self.data['hard']
-            # hard = True
         if 'sync' in self.data and self.data.get('sync') == 'true':
             sync = True
             self.drequest.request_type = "Sync Multiple Deletion"
@@ -1078,7 +1078,7 @@ class MultipleAction(DhcpawnMethodView):
             _logger.debug("Adding post reply task to chain")
             full_chain = chain(delete_chain, refresh_request_job, post_reply_job)
             res = full_chain.apply_async()
-            self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {self.res}"
+            self.msg = f"Deletion to DB Finished. ldap async part is running. stay tuned.. {res}"
 
 #### HELP FUNCTIONS
 # def hard_delete(data):
@@ -1150,16 +1150,15 @@ def validate_data_before_registration(data):
                 new_host = True
                 host = Host(name=hdata.get('hostname'),
                             mac=hdata.get('mac'),
-                            group_id=group.id
-                            )
+                            group_id=group.id)
             else:
                 _logger.info("Host %s already in DB. just updating it" % hdata['hostname'])
             remove_hosts_on_fail.append(host)
             if subnet:
                 if ip == 'allocate':
-                    ip = alloc_single_ip(subnet, 'allocate')
+                    ip = Subnet.alloc_single_ip(subnet, 'allocate')
                 elif ip:
-                    ip = alloc_single_ip(subnet, ip)
+                    ip = Subnet.alloc_single_ip(subnet, ip)
                 else:
                     raise DhcpawnError("what the fuck ? subnet exists (%s) but ip is none ?" % subnet.name)
                 remove_ips_on_fail.append(ip)
@@ -1177,7 +1176,8 @@ def validate_data_before_registration(data):
             if re.search("ip .* already taken", e.__str__()):
                 ip_record = IP.query.filter_by(address=IPv4Address(hdata['ip'])).first()
                 dup_description = re.search("ip .* already taken", e.__str__()).group(0)
-                Duplicate(f"{dup_description} (new host:{hdata['hostname']} existing host: {ip_record.host.name})", "ip")
+                Duplicate(f"{dup_description} (new host:{hdata['hostname']} existing host: {ip_record.host.name})", \
+                          "ip")
                 _logger.error(f"DUPLICATION ERROR: {dup_description}")
             else:
                 raise
@@ -1338,15 +1338,8 @@ class Sync(DhcpawnMethodView):
 
         if post_sync['groups']:
             self.msg = "Sync made some changes"
-            self.result = {'pre sync': {k:v for k,v in self.d['groups'].items() if not v['group is synced']},
-                           'post sync': {k:v for k,v in post_sync.items() if v} }
+            self.result = {'pre sync': {k:v for k, v in self.d['groups'].items() if not v['group is synced']},
+                           'post sync': {k:v for k, v in post_sync.items() if v}}
         else:
             self.msg = "Sync did not change anything"
             self.result = self.d
-
-
-### Sentry
-# @gossip.register('cob.after_configure_app')
-# def after_configure_app(app):
-#     app.config['SENTRY_DSN'] = 'http://1798f04a5bc749e7a99ba63eb8346e60:4560f83a51764b7b8f4fc400aa4b0b8e@sentry.infinidat.com/51'
-#     Sentry(app)
