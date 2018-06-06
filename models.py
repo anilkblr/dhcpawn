@@ -1236,13 +1236,13 @@ class Group(LDAPModel):
             if not host_diffs[grp]['group is synced']:
                 info = host_diffs[grp]['info']
                 gr = get_by_field(Group, 'name', grp)
-                if info.get('only in db'):
-                    stat_dict[grp].setdefault('added to ldap', [])
-                    for host2sync in info['only in db']:
-                        _logger.debug("Creating missing host %s in LDAP (found only on DB)" % host2sync)
-                        host = get_by_field(Host, 'name', host2sync)
-                        host.ldap_add()
-                        stat_dict[grp]['added to ldap'].append(host2sync)
+                # if info.get('only in db'):
+                #     stat_dict[grp].setdefault('added to ldap', [])
+                #     for host2sync in info['only in db']:
+                #         _logger.debug("Creating missing host %s in LDAP (found only on DB)" % host2sync)
+                #         host = get_by_field(Host, 'name', host2sync)
+                #         host.ldap_add()
+                #         stat_dict[grp]['added to ldap'].append(host2sync)
 
                 if info.get('only in ldap'):
                     # we have two ways to sync this case:
