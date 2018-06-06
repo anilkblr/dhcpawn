@@ -286,7 +286,8 @@ class HostAPI(HostBaseAPI):
             tinput = {
                 'hkey': hkey,
                 'hdata': self.data[hkey],
-                'dtask_id': dtasks_group[-1].id
+                'dtask_id': dtasks_group[-1].id,
+                'hard': self.data.get(hkey).get('hard', False)
             }
             Host.single_host_delete_track(**tinput)
 

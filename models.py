@@ -231,6 +231,7 @@ class Host(LDAPModel):
         # in DB. otherwise we can't know we delete the right host.
         host = Host.query.filter_by(name=kwargs.get('hostname')).first()
         if not host :
+            # TODO check if we have an LDAP record and delete it.
             raise DoNothingRecordNotInDB(f"host by hostname {kwargs.get('hostname')} not in DB.")
 
         if not Host._check_identical(host, **kwargs):
@@ -996,7 +997,6 @@ class Host(LDAPModel):
                 celery_task_id= celery_task_id
             )
         try:
-            # host = Host.single_input_validate_before_deletion(**kwargs['hdata'])
             host = Host.validate_host_before_deletion(**kwargs['hdata'])
         except ValidationError as e:
             _logger.error(f"Failed dtask {dtask.id}")
@@ -1022,7 +1022,6 @@ class Host(LDAPModel):
             dtask.update(
                 desc= 'passed single host validation',
             )
-
             try:
                 host.ldap_delete()
             except LDAPError as e:
@@ -1031,7 +1030,24 @@ class Host(LDAPModel):
                     desc= f"Failed ldap delete {host}",
                     err_str = e.__str__()
                 )
+                ldap_delete_success = False
+                ldap_delete_error = e.__str__()
             else:
+                dtask.update(
+                    status= 'succeeded',
+                    desc= f"Deleted {host} from ldap",
+                )
+                ldap_delete_success = True
+                ldap_delete_error = ''
+            finally:
+                if not ldap_delete_success and not kwargs['hdata'].get('hard'):
+                    dtask.update(
+                        status='failed',
+                        desc=f"Failed DB deletion for host {host}",
+                        err_str=ldap_delete_error,
+                    )
+                    raise ValidationError(ldap_delete_error)
+
                 success_result = json.dumps({kwargs.get('hkey'):host.config()})
                 if host.ip:
                     db.session.delete(host.ip)
