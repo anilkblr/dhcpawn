@@ -1,6 +1,5 @@
 *ldap.zsh
 /.cob
-migrations/
 __pycache__/
 
 dhcpawn.ipynb
@@ -16,5 +15,5 @@ celerybeat-schedule
 dhcpawn_tmuxconf.yml
 .cob-project.yml
 ldap_utils.py
-
+flycheck_*
 .Dockerfile

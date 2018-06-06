@@ -3,10 +3,10 @@ import logbook
 import json
 from ldap import LDAPError, NO_SUCH_OBJECT
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, current_app
 from cob import db
 
-from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange
+from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange, Sync
 from . import methodviews as mv
 from .help_functions import get_by_field, extract_skeleton
 from .tasks import *
@@ -16,7 +16,9 @@ api = Blueprint('rest', __name__)
 
 
 api.add_url_rule('/duplicates/', view_func=mv.DuplicateListAPI.as_view('dhcpawn_duplicate_list_api'), methods=['GET'])
-api.add_url_rule('/duplicates/<param>', view_func=mv.DuplicateAPI.as_view('dhcpawn_duplicate_api'), methods=['GET','POST','DELETE'])
+api.add_url_rule('/duplicates/<param>', view_func=mv.DuplicateAPI.as_view('dhcpawn_duplicate_api'), methods=['GET'])
+
+api.add_url_rule('/ldapsanity', view_func=mv.LdapSanityAPI.as_view('dhcpawn_ldapsanity_api'), methods=['GET','POST'])
 
 api.add_url_rule('/requests/', view_func=mv.DRequestListAPI.as_view('dhcpawn_request_list_api'), methods=['GET'])
 api.add_url_rule('/requests/<param>', view_func=mv.DRequestAPI.as_view('dhcpawn_request_api'), methods=['GET'])
@@ -49,6 +51,9 @@ api.add_url_rule('/calcranges/', view_func=mv.CalculatedLRangeListAPI.as_view('c
 
 api.add_url_rule('/sync/', view_func=mv.Sync.as_view('sync'), methods=['GET', 'POST'])
 api.add_url_rule('/sync/group/<group_name>', view_func=mv.Sync.as_view('sync_per_group'), methods=['GET', 'POST'])
+
+api.add_url_rule('/newsync', view_func=mv.NewSyncListAPI.as_view('newsync_list_api'), methods=['GET', 'POST'])
+api.add_url_rule('/newsync/<param>', view_func=mv.NewSync.as_view('newsync'), methods=['GET'])
 
 api.add_url_rule('/clearhosts/', view_func=mv.HostListAPI.as_view('clear_hosts_from_db'), methods=['DELETE'])
 api.add_url_rule('/clearips/', view_func=mv.IPListAPI.as_view('clear_ips_from_db'), methods=['DELETE'])
@@ -135,3 +140,10 @@ def sync_all_groups():
     #         _logger.error(f"failed group {gr} sync {e.__str__()}")
 
     return jsonify("Sent sync all groups task")
+
+@api.route('/refresh_ldap_connection')
+def refresh_ldap_connection():
+    from .ldap_utils import ldap_init
+    current_app.ldap_obj = ldap_init()
+
+    return jsonify("refreshed")
