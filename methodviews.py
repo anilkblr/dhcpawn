@@ -2,6 +2,7 @@ import re
 import logbook
 import json
 import gossip
+from datetime import datetime
 from sqlalchemy import desc
 from sqlalchemy.orm import joinedload
 from flask import jsonify, request, url_for
@@ -13,7 +14,8 @@ from celery import chain
 from cob import db
 from raven.contrib.flask import Sentry
 
-from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate
+from .models import Host, Group, Subnet, IP, Pool, DhcpRange, CalculatedRange, Req, Dtask, Duplicate, LDAPModel
+from .models import Sync as NewSyncModel
 from .help_functions import _get_or_none, get_by_id, get_by_field, DhcpawnError, update_req, gen_resp_deco
 from .tasks import *
 
@@ -901,6 +903,15 @@ class PoolAPI(DhcpawnMethodView):
         db.session.commit()
         self.result = [pool.config() for pool in Pool.query.all()]
 
+# LDAP Sanity class
+class LdapSanityAPI(DhcpawnMethodView):
+
+    @gen_resp_deco
+    def post(self):
+        LDAPModel.run_ldap_sanity(**{'dreq':Req(), 'sender':'manual rest for testing'})
+        self.result = [duplicate.config() for duplicate in Duplicate.query.all()]
+        self.msg = "Run LDAP sanity check"
+
 # Duplicate Class
 class DuplicateBaseAPI(DhcpawnMethodView):
     def get_duplicate_by_param(self, param):
@@ -910,10 +921,12 @@ class DuplicateBaseAPI(DhcpawnMethodView):
             self.result = [d.config() for d in dup]
         elif isinstance(dup, Duplicate):
             self.result = dup.config()
+            return dup
         else:
             self.errors = f"Wrong parameter {param} or no dhcpawn request with this parameter"
             self.msg = f"Please make sure this duplicate type exists. to see all duplicates please use this url: {url_for('rest.dhcpawn_duplicate_list_api', _external=True)}"
             raise DhcpawnError(self.errors)
+
 
 class DuplicateAPI(DuplicateBaseAPI):
 
@@ -925,37 +938,11 @@ class DuplicateAPI(DuplicateBaseAPI):
         except DhcpawnError:
             return
 
-
-    @gen_resp_deco
-    def post(self, param):
-        ''' used to make a duplicate record valid again.
-        param can only be an id nubmer '''
-        try:
-            dup = self.get_duplicate_by_param(param)
-        except DhcpawnError:
-            return
-        dup.make_valid()
-        self.msg = "Duplicate record is now valid"
-
-    @gen_resp_deco
-    def put(self, param):
-        ''' param can only be an id nubmer
-        used to invalidate a duplicate record'''
-        try:
-            dup = self.get_duplicate_by_param(param)
-        except DhcpawnError:
-            return
-
-        dup.invalidate()
-        self.msg = "Invalidated Duplicate record"
-
-
 class DuplicateListAPI(DhcpawnMethodView):
 
     @gen_resp_deco
     def get(self):
-        self.result = [duplicate.config() if duplicate.valid
-                        else None for duplicate in Duplicate.query.all()]
+        self.result = [duplicate.config() for duplicate in Duplicate.query.all()]
         self.msg = "get all duplicates"
 
 ###### Help functions
@@ -1344,6 +1331,50 @@ class Sync(DhcpawnMethodView):
         else:
             self.msg = "Sync did not change anything"
             self.result = self.d
+
+
+class NewSyncListAPI(DhcpawnMethodView):
+
+    @gen_resp_deco
+    def get(self):
+        ''' used to get a list of all new sync from database '''
+        syncs = NewSyncModel.query.order_by(desc('id')).all()
+        self.result = dict(items=[sync.config() for sync in syncs])
+        self.msg = 'get all syncs'
+
+    @gen_resp_deco
+    @update_req
+    def post(self):
+        '''
+        New sync - not group based. all ldap records are taken and compared to DB.
+        '''
+        s = NewSyncModel()
+        s.run_new_sync(**{'dreq': self.drequest, 'sender':'manual'})
+        NewSyncModel.purge()
+        self.result = s.config()
+
+class NewSyncBaseAPI(DhcpawnMethodView):
+    def get_newsync_by_param(self, param):
+        self.patterns = {k: patterns[k] for k in ('id',)}
+        syncmodel = identify_param(NewSyncModel, param, self.patterns)
+        if syncmodel:
+            return syncmodel
+        else:
+            raise DhcpawnError(f"Wrong parameter {param} or no dhcpawn New Sync with this parameter")
+
+class NewSync(NewSyncBaseAPI):
+
+    @gen_resp_deco
+    def get(self, param):
+        try:
+            req = self.get_newsync_by_param(param)
+        except DhcpawnError as e:
+            self.msg = 'Please make sure the id exists. to see all requests please use this link: %s' % url_for('rest.newsync_list_api', _external=True)
+            self.errors = e.__str__()
+            return
+
+        self.result = req.config()
+        self.msg = 'get info about dhcpawn new sync number %s' % param
 
 
 ### Sentry

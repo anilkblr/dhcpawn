@@ -2,6 +2,9 @@ import json
 import re
 import os
 import logbook
+import smtplib
+from datetime import datetime
+from email.mime.text import MIMEText
 from ldap import SCOPE_SUBTREE
 from ipaddress import IPv4Address, IPv4Network
 from functools import wraps
@@ -18,7 +21,7 @@ _logger = logbook.Logger(__name__)
 __all__ = ['DhcpawnError', 'DuplicateError', 'MissingMandatoryArgsError',
            'ValidationError', 'InputValidationError', 'DoNothingRecordExists',
            'BadSubnetName', 'IPAlreadyExists', 'ConflictingParamsError',
-           'DoNothingRecordNotInDB', 'SyncError']
+           'DoNothingRecordNotInDB', 'SyncError', 'email_daily_sanity']
 
 class DhcpawnError(Exception):
     pass
@@ -300,3 +303,105 @@ def extract_skeleton():
             # calcranges += yaml.dump([{'url':'/rest/calcranges/', 'data': {'subnet_name':sname, 'min':str(ranges[1][0]),'max':str(ranges[1][1]), 'deployed':deploy}}])
 
     return skeleton
+
+# email stuff
+def _send_email(*, body, recipients, subject):
+    msg = MIMEText(body, _subtype='html')
+
+    from_ = "Dhcpawn <dhcpawn@infinidat.com>"
+    msg['Subject'] = subject
+    msg['From'] = from_
+    msg['To'] = ', '.join(recipients)
+    s = smtplib.SMTP('smtp-dev.lab.il.infinidat.com')
+    s.sendmail(from_, recipients, msg.as_string())
+    s.quit()
+
+def _parse_sync_to_email(*, sync_inst):
+
+    content = {}
+    only_in_db = {}
+    only_in_ldap = {}
+    result = json.loads(sync_inst.result)
+    if result.get('content'):
+        content = result.get('content')
+    if result.get('only_in_db').get('not_fixed'):
+        only_in_db = result.get('only_in_db').get('not_fixed')
+    if result.get('only_in_ldap').get('not_fixed'):
+        only_in_ldap = result.get('only_in_ldap').get('not_fixed')
+
+    body = f"<p><b>Status:</b>{sync_inst.status}</p>"
+    if sync_inst.status == 'clean':
+        return body
+
+    if content:
+        body += f"<b style=\"font-size:25px;color:green\">Content (different):</b><br>"
+        for h in content:
+            _logger.info(h)
+            body += f"<li><b>{h}:</b></li>"
+            body += "<ul>"
+            for diff in content[h]['different']:
+                body += "<ul>"
+                body += f"<li>{str(content[h]['different'][diff])}</li>"
+                body += "</ul>"
+            body += "</ul>"
+            body += "</ul>"
+
+    if only_in_ldap:
+        body += f"<br><b style=\"font-size:25px;color:green\">Only in ldap (not fixed):</b><ul>"
+        for ldaph in only_in_ldap:
+            body += f"<li><b>{ldaph}</b></li>"
+            body += "<ul>"
+            body += f"<li><b>mac:</b> {only_in_ldap[ldaph]['mac']}</li>"
+            body += f"<li><b>group:</b> {only_in_ldap[ldaph]['group']}</li>"
+            body += f"<li><b>description:</b> {only_in_ldap[ldaph]['description']}</li>"
+            body += "</ul>"
+        body += "</ul>"
+    if only_in_db:
+        body += f"<br><b style=\"font-size:25px;color:green\">Only in DB (not fixed):</b><ul>"
+        for dbh in only_in_db:
+            body += f"<li><b>{dbh}</b></li>"
+            body += "<ul>"
+            body += f"<li><b>mac:</b> {only_in_db[dbh]['mac']}</li>"
+            body += f"<li><b>group:</b> {only_in_db[dbh]['group']}</li>"
+            body += f"<li><b>description:</b> {only_in_db[dbh]['description']}</li>"
+            body += "</ul>"
+        body += "</ul>"
+
+    return body
+
+def _parse_duplicate_info_to_email(*, issue):
+
+    body = f"<p style='text-decoration: underline;font-size:20px'>\
+    {issue[0]} duplication:\
+    <ul>\
+    <li><b>value:</b> {issue[1]}</li>\
+    <li><b>extra info:</b> <ul>"
+
+    for dn in issue[2]:
+        body += f"<li>{dn}</li>"
+
+    body += "</ul></li>\
+    </ul>\
+    </p>"
+
+    return body
+
+def email_daily_sanity(**kwargs):
+    ldap_issues = kwargs.get('ldap_issues')
+    emails = kwargs.get('emails')
+    last_sync = kwargs.get('last_sync')
+
+    extra_body = ''
+    if ldap_issues:
+        extra_body += "<p style=\"font-size:30px;color:blue\"><em>LDAP Sanity Issues:</em></p>"
+        for issue in ldap_issues:
+            extra_body += _parse_duplicate_info_to_email(issue=issue)
+
+    if last_sync:
+        extra_body += "<p style=\"font-size:30px;color:blue\"><em>DB-LDAP Sync Issues:</em></p>"
+        extra_body += _parse_sync_to_email(sync_inst=last_sync)
+
+    _send_email(
+        subject=f"Daily Dhcpawn Sanity {datetime.strftime(datetime.now(), '%d-%m-%Y %H:%M:%S')}",
+        body=f"{extra_body}",
+        recipients=emails)

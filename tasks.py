@@ -6,12 +6,15 @@ import os
 # from celery.contrib import rdb
 from cob import task, db
 from cob.project import get_project
-from .models import Host, Group, Req, db, Dtask, IP, deploy_hosts, deploy_skeleton
+from .models import Host, Group, Req, db, Dtask, IP, deploy_hosts, deploy_skeleton, LDAPModel, Duplicate, User
+from .models import Sync as NewSyncModel
 from .help_functions import *
 from celery import chain
 from celery.exceptions import WorkerLostError, TimeLimitExceeded
+from celery.schedules import crontab
 from ldap import LDAPError, TIMEOUT, ALREADY_EXISTS, LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import desc
 from raven import Client
 from raven.contrib.celery import register_signal, register_logger_signal
 import logging
@@ -27,91 +30,56 @@ register_signal(client)
 register_signal(client, ignore_expected=True)
 
 
-__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy', 'task_sync_new']
+__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
+
 if get_project().config.get('sync_config'):
-    sync_every = dhcpawn_project.config['sync_config']['group_sync_every']
-    stat_every = dhcpawn_project.config['sync_config']['sync_stat_every']
-    sync_delete_ldap_entries = dhcpawn_project.config['sync_config'].get('sync_delete_ldap_entries', os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
-    sync_copy_ldap_entries_to_db = dhcpawn_project.config['sync_config'].get('sync_copy_ldap_entries_to_db', os.getenv('_DHCPAWN_SYNC_COPY_LDAP_ENTRIES_TO_DB', True))
+    sync_config = dhcpawn_project.config['sync_config']
+    sync_every = sync_config['sync_every']
+    ldap_sanity_every = sync_config['ldap_sanity_every']
+    sync_max_records_to_keep = sync_config['max_records_to_keep']
+    sync_delete_ldap_entries = sync_config.get('sync_delete_ldap_entries', \
+                                               os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
+    sync_copy_ldap_entries_to_db = sync_config.get('sync_copy_ldap_entries_to_db', \
+                                                   os.getenv('_DHCPAWN_SYNC_COPY_LDAP_ENTRIES_TO_DB', True))
 else:
     sync_every = 600
-    stat_every = 300
+    ldap_sanity_every = 300
     sync_delete_ldap_entries = False
     sync_copy_ldap_entries_to_db = True
+    sync_max_records_to_keep = 20
 
 _logger = logbook.Logger(__name__)
 
-# @task(every=stat_every, use_app_context=True)
-def task_get_sync_stat():
-    # get sync stat for all groups
-    return Group.get_sync_stat_for_all_groups()
-
-@task(bind=True, use_app_context=True)
-def task_sync_per_group(self, *args, **kwargs):
-    gr_name = kwargs.get('gr_name')
-    gr = Group.validate_by_name(gr_name)
-    _logger.debug(f"Start syncing group {gr}")
-    try:
-        kwargs.update({'sync_delete_ldap_entries':sync_delete_ldap_entries})
-        kwargs.update({'sync_copy_ldap_entries_to_db':sync_copy_ldap_entries_to_db})
-        tmpd, host_stat_dict = gr.group_sync(**kwargs)
-        return tmpd
-
-    except (LDAPError, DhcpawnError) as e:
-            _logger.error(f"failed group {gr} sync {e.__str__()}")
-    # else:
-    #     if host_stat_dict:
-    #         return host_stat_dict
-    #     else:
-    #         return tmpd
-
 @task(bind=True, every=sync_every, use_app_context=True)
-def task_sync_new(self):
+def task_new_sync(self):
 
-    if not Group.query.all():
-        # probably need to deploy skeleton
-        _logger.debug("Detected empty DB - no skeleton - populating from LDAP to DB.")
-        deploy_skeleton()
-        return jsonify("Synced LDAP Skeleton to DB. next time will update hosts per group.")
+    self.drequest = Req()
+    s = NewSyncModel()
+    s.run_new_sync(**{'dreq': self.drequest, 'sender':'dhcpawn task'})
+    NewSyncModel.purge(sync_max_records_to_keep)
 
-    sync_tasks_group = []
-    for gr in Group.query.all():
+    return f"Sync request: {s.id} finished. Drequest id: {self.drequest.id}"
 
-        sync_tasks_group.append(task_sync_per_group.si(**{'gr_name': gr.name}))
+@task(bind=True, every=ldap_sanity_every, use_app_context=True)
+def task_run_ldap_sanity(self):
 
-    sync_chain = chain(sync_tasks_group)
-    sync_chain.apply_async()
+    self.drequest = Req()
+    LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
+    return [duplicate.config() for duplicate in Duplicate.query.all()]
 
-@task(bind=True)
-def task_get_group_sync_stat(self, group_name, dtask_id):
-    current_tid = self.request.id
-    dtask = Dtask.query.get(dtask_id)
-
-    gr = Group.validate_by_name(group_name)
-
-    try:
-        stat = gr.get_sync_stat()
-    except ldap.SERVER_DOWN:
-        dtask.update(
-            status='failed',
-            err_str='Group (%s) get sync stat failed due to LDAP server down issue' % gr.name,
-            desc='Get sync stat for group %s' % gr.name,
-            celery_task_id=current_tid
-        )
-    else:
-        dtask.update(
-            status= 'succeeded',
-            desc= 'Get sync stat for group %s' % gr.name,
-            celery_task_id= current_tid
-        )
-
-        dreq = Req.query.get(dtask.dreq_id)
-        dreq.drequest_result = json.dumps(stat)
-        db.session.add(dreq)
-        db.session.commit()
-        dreq.refresh_status()
-
-    return "%s - %s" % (dtask.desc, dtask.status)
+@task(bind=True, every=crontab(hour='10', minute='1', day_of_week='sun,mon,tue,wed,thu,fri,sat'), use_app_context=True)
+def task_daily_sanity(self):
+    self.drequest = Req()
+    # run sync
+    s = NewSyncModel()
+    s.run_new_sync(**{'dreq': self.drequest, 'sender':'dhcpawn task'})
+    last_sync = NewSyncModel.query.order_by(desc('id')).all()[0]
+    # run ldap sanity
+    ldap_issues = LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
+    # send email with results
+    email_daily_sanity(**{'emails':[user.email for user in User.query.all()],
+                          'ldap_issues':ldap_issues,
+                          'last_sync':last_sync})
 
 @task(bind=True, use_app_context=True)
 def task_update_drequest(self, *args, **kwargs):
@@ -159,71 +127,3 @@ def task_deploy(self, include_hosts):
         raise
 
     _logger.info("Finished Deployment Stage")
-
-# @task(bind=True, use_app_context=True)
-# # def task_host_ldap_add(self, hid, dtask_id, *args):
-# def task_host_ldap_add(self, *args, **kwargs):
-#     ''' after creating new host in db
-#     run async task to udpate LDAP
-#     hid = host id
-#     dreq_id = the related dhcpawn request id
-#     '''
-#     current_tid = self.request.id # task_id of the task we are in
-#     hid = kwargs.get('hid')
-#     dtask_id = kwargs.get('dtask_id')
-#     try:
-#         return Host.drequest_ldap_add(hid, dtask_id, current_tid)
-#     except LDAPError as e:
-#         _logger.debug(e.__str__())
-#         raise self.retry(countdown=10, exc=e, max_retries=1)
-#     else:
-#         _logger.warning("In task after retry {current_id}")
-
-# @task(bind=True, use_app_context=True)
-# # def task_host_ldap_delete(self, hid, dtask_id):
-# def task_host_ldap_delete(self, *args, **kwargs):
-#     '''
-#     just delete LDAP entry for a specific host
-#     hid = host id
-#     '''
-#     current_tid = self.request.id # task_id from this task instance
-#     hid = kwargs.get('hid')
-#     dtask_id = kwargs.get('dtask_id')
-#     try:
-#         return Host.drequest_ldap_delete(hid, dtask_id, current_tid)
-#     except LDAPError as e:
-#         _logger.debug(e.__str__())
-#         raise self.retry(countdown=10, exc=e, max_retries=1)
-#     else:
-#         _logger.warning("In task after retry {current_id}")
-
-    # host = Host.query.get(hid)
-    # dtask = Dtask.query.get(dtask_id)
-    # err_str = ''
-    # try:
-    #     host.ldap_delete()
-    # except DhcpawnError as e:
-    #     err_str = f"Ldap delete for host {host.name} with host_id {hid} failed due to: {e.__str__()}"
-    #     _logger.error(err_str)
-    #     dtask.update(
-    #         status='failed',
-    #         err_str= err_str,
-    #         desc='ldap delete host %s' % host.name,
-    #         celery_task_id=current_tid
-    #     )
-    # else:
-    #     _logger.debug('Host (%s) was also be deleted from DB', host.name)
-    #     if host.ip:
-    #         db.session.delete(host.ip)
-    #     db.session.delete(host)
-    #     db.session.commit()
-
-    #     dtask.update(
-    #         status='succeeded',
-    #         desc='DB delete host %s' % host.name,
-    #         celery_task_id=current_tid
-    #     )
-    #     dreq = Req.query.get(dtask.dreq_id)
-    #     dreq.refresh_status()
-
-    # return "%s - %s - %s" % (dtask.desc, dtask.status, err_str)

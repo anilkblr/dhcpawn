@@ -4,20 +4,24 @@ import json
 import requests
 import ldap
 from time import sleep
-
+from datetime import datetime
 from flask import current_app
 from ldap import modlist, SCOPE_BASE, SCOPE_SUBTREE, TIMEOUT, ALREADY_EXISTS, \
     LOCAL_ERROR, DECODING_ERROR, NO_SUCH_OBJECT, SERVER_DOWN, LDAPError
 from ipaddress import IPv4Address, IPv4Network
+from sqlalchemy import desc
 from sqlalchemy_utils import IPAddressType
 from sqlalchemy.exc import IntegrityError
 from cob import db
+from cob.project import get_project
 
 from .ldap_utils import server_dn
 from .help_functions import _get_or_none, get_by_field, parse_ldap_entry, extract_skeleton
 from .help_functions import *
 
 _logger = logbook.Logger(__name__)
+_config = get_project().config
+
 
 def gen_modlist(obj_dict, options):
     """ create a modlist in order to change entry in LDAP"""
@@ -112,6 +116,143 @@ class LDAPModel(db.Model):
     def ldap_get(self, dn=None, parse=False):
         return self.ldap_retry(cmd_type='get', dn=dn, parse=parse)
 
+    @staticmethod
+    def run_ldap_sanity(**kwargs):
+
+        dreq = kwargs.get('dreq')
+        if 'sender' not in kwargs:
+            kwargs['sender'] = 'NA'
+        dreq.request_type = f"LDAP sanity - {kwargs.get('sender')}"
+        dtask = Dtask(dreq.id)
+        dtask.update(desc='Run ldap sanity check')
+        # delete all existing duplicate records before running the check
+        Duplicate.query.delete()
+        sanity_dict = LDAPModel.ldap_hosts_to_sanity_dict()
+        issues = []
+        for field_type in ['hostname', 'mac', 'ip']:
+            for info in sanity_dict[field_type]:
+                if sanity_dict[field_type][info] > 1:
+                    desc = [dn[0] for dn in LDAPModel.get_record_by(field_type, info)]
+                    Duplicate(dupvalue=info, duptype=field_type, desc=str(desc))
+                    issues.append([field_type, info, desc])
+
+        dtask.update(status='succeeded',
+                     desc=f"LDAP Sanity status..",
+                     result=json.dumps(sanity_dict)
+        )
+        dreq.refresh_status()
+        return issues
+
+
+    @staticmethod
+    def get_ldap_dict():
+        ldap_hosts = LDAPModel._ldap_get_all_host_records()
+        return LDAPModel._parse_ldap_hosts(ldap_hosts)
+
+    @staticmethod
+    def ldap_hosts_to_sanity_dict():
+        ''' take all ldap hosts and create a dict to catch all
+        hostname/mac/ip duplicates
+        '''
+        ldap_hosts = LDAPModel._ldap_get_all_host_records()
+        _tmp = {'hostname':{}, 'mac':{}, 'ip':{}}
+        for ldaph in ldap_hosts:
+            tmprecord = LDAPModel._parse_single_ldap_host_to_dict(ldaph, outtype='ldap_sanity')
+            _tmp['hostname'][tmprecord[0]] = _tmp['hostname'].get(tmprecord[0], 0) + 1
+            _tmp['mac'][tmprecord[1]] = _tmp['mac'].get(tmprecord[1], 0) + 1
+            if tmprecord[3]:
+                _tmp['ip'][tmprecord[3]] = _tmp['ip'].get(tmprecord[3], 0) + 1
+
+
+        return _tmp
+
+
+    @staticmethod
+    def _parse_ldap_hosts(ldap_hosts):
+        tmp = dict()
+        for ldaph in ldap_hosts:
+            tmprecord = LDAPModel._parse_single_ldap_host_to_dict(ldaph)
+            tmp[tmprecord[0]] = tmp.get(tmprecord[0], ()) + (tmprecord[1], )
+
+        return tmp
+
+    @staticmethod
+    def _parse_single_ldap_host_to_dict(ldaph, outtype='sync'):
+        '''
+        if outsync == sync, we use this method for dhcpawn_ldap sync
+        otherwise outsync should equal ldap_sanity
+        ('cn=ibox512,cn=Infinilab-Systems,cn=DHCP Config,dc=dhcpawn,dc=net',
+        {'objectClass': [b'dhcpHost', b'top'], 'dhcpHWAddress': [b'ethernet 74:2b:0f:00:02:00'], 'cn':
+        [b'ibox512'], 'dhcpStatements': [b'fixed-address 172.16.64.145']})
+        '''
+        hostname = None
+        mac = None
+        group = None
+        ip = None
+
+        hostname = ldaph[1].get('cn')[0].decode('utf-8')
+        if 'dhcpHWAddress' in ldaph[1]:
+            mac = ldaph[1].get('dhcpHWAddress')[0].decode('utf-8').split()[1]
+        if 'dhcpStatements' in ldaph[1]:
+            ip = ldaph[1].get('dhcpStatements')[0].decode('utf-8').split()[1]
+        group = ldaph[0].split(",cn=")[1]
+        if outtype == 'sync':
+            return [hostname, [mac, group, ip]]
+        elif outtype == 'ldap_sanity':
+            return (hostname, mac, group, ip)
+
+    @staticmethod
+    def _get_groups():
+        ''' return ldap groups as ldap records '''
+        config = get_project().config
+        return current_app.ldap_obj.search_s(config.get('PRODUCTION_LDAP_DN'),
+                                             ldap.SCOPE_SUBTREE,
+                                             "(&(objectClass=dhcpGroup)(objectClass=top))")
+
+    @staticmethod
+    def _ldap_get_all_host_records():
+        ''' for each ldap group get all dhcpHost records '''
+        _ldap_hosts = []
+
+        for ldapg in LDAPModel._get_groups():
+            _ldap_hosts += current_app.ldap_obj.search_s(f"cn={ldapg[1].get('cn')[0].decode('utf-8')}, \
+            {_config.get('PRODUCTION_LDAP_DN')}", ldap.SCOPE_SUBTREE,
+            "(&(objectClass=dhcpHost)(objectClass=top))")
+
+        return _ldap_hosts
+
+    @staticmethod
+    def get_record_by(bytype, value):
+        _tmp = {'hostname':LDAPModel.get_record_by_hostname,
+                'mac':LDAPModel.get_record_by_mac,
+                'ip':LDAPModel.get_record_by_ip}
+
+        if bytype not in ['hostname', 'mac', 'ip']:
+            raise DhcpawnError(f'wrong type given to ldap search: {bytype}. only hostname, mac and ip are supported')
+        return _tmp[bytype](value)
+
+    @staticmethod
+    def get_record_by_hostname(hostname):
+        ''' search LDAP by hostname'''
+        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+                                             ldap.SCOPE_SUBTREE,
+                                             f"(&(objectClass=dhcpHost)(cn={hostname}))")
+
+    @staticmethod
+    def get_record_by_mac(mac):
+        ''' search LDAP by mac address'''
+        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+                                             ldap.SCOPE_SUBTREE,
+                                             f"(&(objectClass=dhcpHost)(dhcpHWAddress=ethernet {mac}))")
+
+
+    @staticmethod
+    def get_record_by_ip(ip):
+        '''search LDAP by ip address '''
+        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+                                             ldap.SCOPE_SUBTREE,
+                                             f"(&(objectClass=dhcpHost)(dhcpStatements=fixed-address {ip}))")
+
     def ldap_modify(self, dn=None):
         raise RuntimeError("prevent ldap_modify from running")
         if not dn:
@@ -153,6 +294,7 @@ class LDAPModel(db.Model):
 #LDAP Models
 
 class Host(LDAPModel):
+
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(255), unique=True)
     mac = db.Column(db.String(100), unique=True)
@@ -1960,39 +2102,288 @@ class Dtask(db.Model):
                     celery_task_id=self.celery_task_id,
                     result=json.loads(self.result) if self.result else None)
 
+class Sync (db.Model):
+
+    id = db.Column(db.Integer, primary_key=True)
+    status = db.Column(db.String(50)) # clean, dirty, fail
+    starttime = db.Column(db.DateTime, default=datetime.now)
+    endtime = db.Column(db.DateTime, onupdate=datetime.now, default=datetime.now)
+    result = db.Column(db.Text, default='')
+
+    def __init__(self):
+        '''
+        self.ldap_dict - contains all ldap records in a dict
+        with hostnames as keys
+        '''
+        self.starttime = datetime.now()
+        self.ldap_dict = LDAPModel.get_ldap_dict()
+        self.result = {'only in db': {},
+                       'only in ldap': {},
+                       'content': {}}
+
+    def config(self):
+        return dict(id=self.id,
+                    status=self.status,
+                    starttime=self.starttime,
+                    endtime=self.endtime,
+                    result=json.loads(self.result) if self.result else None)
+
+    def update(self, **kwargs):
+        ''' update sync instance fields '''
+        if 'status' in kwargs:
+            self.status = kwargs.get('status')
+        if 'endtime' in kwargs:
+            self.endtime = datetime.now()
+        if 'result' in kwargs:
+            self.result = json.dumps(kwargs.get('result'))
+
+        self.commit()
+
+    def commit(self):
+        db.session.add(self)
+        db.session.commit()
+
+    @staticmethod
+    def purge(sync_max_records_to_keep=20):
+        _logger.info(f"Purging sync table - leaving last {sync_max_records_to_keep} records")
+        counter = 0
+        for s in Sync.query.order_by(desc('id')).all():
+            counter += 1
+            if counter > sync_max_records_to_keep:
+                db.session.delete(s)
+
+        db.session.commit()
+
+    def calculate_amounts(self):
+        ''' udpate sync result with amounts '''
+        res = json.loads(self.result)
+        if res.get('amounts'):
+            return
+        res.update({'amounts':{'content':'', 'only_in_ldap':{'fixed':'', 'not_fixed':''}, 'only_in_db':{'fixed':'', 'not_fixed':''}}})
+        res.get('amounts')['content'] = len(res.get('content'))
+        res.get('amounts').get('only_in_db')['fixed'] = len(res.get('only_in_db').get('fixed'))
+        res.get('amounts').get('only_in_db')['not_fixed'] = len(res.get('only_in_db').get('not_fixed'))
+        res.get('amounts').get('only_in_ldap')['fixed'] = len(res.get('only_in_ldap').get('fixed'))
+        res.get('amounts').get('only_in_ldap')['not_fixed'] = len(res.get('only_in_ldap').get('not_fixed'))
+        self.update(**{'result':res})
+
+    def run_new_sync(self, **kwargs):
+        ''' run in two steps :
+        1. compare ldap to db
+        2. compare db to ldap
+        '''
+        dreq = kwargs.get('dreq')
+        dreq.request_type = f"New Sync - {kwargs.get('sender')}"
+        dtask = Dtask(dreq.id)
+        dtask.update(desc='New-Sync run compare_ldap_to_db')
+
+        _result = {'content': {}, 'only_in_db': {}, 'only_in_ldap':{}}
+        # LDAP TO DB
+        _clean1, res = self.compare_ldap_to_db()
+        _result['content'].update(res['content'])
+        _result['only_in_ldap'].update(res['only_in_ldap'])
+        dtask.update(desc=f"New-Sync finished running compare_ldap_to_db with status {_clean1}")
+        # DB TO LDAP
+        _clean2, res = self.compare_db_to_ldap()
+        _result['only_in_db'].update(res['only_in_db'])
+
+        st = 'clean' if _clean1 and _clean2 else 'dirty'
+        dtask.update(desc=f"New-Sync finished running compare_db_to_ldap with status {_clean2}")
+        self.update(**{'status':st, 'endtime':'', 'result':_result})
+        dtask.update(status='succeeded',
+                     desc=f"New Sync status {st}",
+                     result=json.dumps(_result)
+        )
+        self.calculate_amounts()
+        dreq.refresh_status()
+
+
+    def compare_ldap_to_db(self):
+        ''' look for each ldap record in DB '''
+        _clean = True
+        _result = {'content':{}, 'only_in_ldap':{'fixed':{},'not_fixed':{}}}
+        for ldaph in self.ldap_dict:
+            # ldap might contain more than one record
+            # with same hostname
+            for ldaph_info in self.ldap_dict[ldaph]:
+                dbh = Host.query.filter_by(name=ldaph).first()
+                if dbh:
+                    _tmp_clean, _diff = self._compare_records(dbh, ldaph_info)
+                    if _diff:
+                        _result['content'].update(_diff)
+                else:
+                    _success, _info = self.only_in_ldap(ldaph, ldaph_info)
+                    if _success:
+                        _result['only_in_ldap']['fixed'].update(_info)
+                    else:
+                        _tmp_clean = False
+                        _result['only_in_ldap']['not_fixed'].update(_info)
+
+                if not _tmp_clean:
+                    _clean = False
+
+        return _clean, _result
+
+    def only_in_ldap(self, ldaph, ldaph_info):
+        ''' take care of only_in_ldap records
+        1. validate we can create this record in DB (ip and mac are not taken)
+        2. create the record in DB if possible
+        3. return dict with info and if fixed or not
+        '''
+        _tmp = {ldaph: {'hostname':ldaph,
+                        'mac': ldaph_info[0],
+                        'group':ldaph_info[1],
+                        'ip':ldaph_info[2]}
+        }
+        try:
+            if ldaph_info[2] is None:
+                newip = None
+            else:
+                newip = IP(address=IP.is_ip_taken(ldaph_info[2]))
+        except ValidationError as e:
+            _tmp[ldaph].update({'description': e.__str__()})
+            return False, _tmp
+        else:
+            try:
+                host_by_mac = Host.query.filter_by(mac=ldaph_info[0]).first()
+                if isinstance(host_by_mac, Host):
+                    _tmp[ldaph].update({'description': f"Mac {ldaph_info[0]} already in DB. hostname in DB is {host_by_mac.name}"})
+                    return False, _tmp
+                if newip is None:
+                    newhost = Host(name=ldaph,
+                                   mac=ldaph_info[0],
+                                   group_id=Group.validate_by_name(ldaph_info[1]).id,
+                    )
+                else:
+                    newhost = Host(name=ldaph,
+                                   mac=ldaph_info[0],
+                                   group_id=Group.validate_by_name(ldaph_info[1]).id,
+                                   ip=newip
+                    )
+            except IntegrityError as e:
+                _tmp[ldaph].update({'description': e.__str__()})
+                return False, _tmp
+            else:
+                if newip is not None:
+                    db.session.add(newip)
+                db.session.add(newhost)
+                db.session.commit()
+                _tmp[ldaph].update({'description': 'Fixed - New host created in DB.'})
+                return True, _tmp
+
+    def compare_db_to_ldap(self):
+        ''' look for each DB record in ldap
+        (using self.ldap_dict) '''
+        _clean = True
+        _result = {'only_in_db':{'fixed':{},'not_fixed':{}}}
+        for h in Host.query.all():
+            if h.name not in self.ldap_dict:
+                _success, _info = self.only_in_db(h)
+                if not _success:
+                    _clean = False
+                if _success:
+                    _result['only_in_db']['fixed'].update(_info)
+                else:
+                    _result['only_in_db']['not_fixed'].update(_info)
+
+        return _clean, _result
+
+    def only_in_db(self, h):
+        ''' take care of only in db records '''
+        _err = ''
+        _tmp = {h.name: {'mac': h.mac,
+                         'group': h.group.name,
+                         'ip':h.ip.address.compressed if h.ip else None}
+        }
+        ldap_host_by_mac = LDAPModel.get_record_by_mac(h.mac)
+        ldap_host_by_ip = LDAPModel.get_record_by_ip(h.ip.address.compressed) if h.ip else None
+
+        if ldap_host_by_mac:
+            _err += f"mac {h.mac} already in LDAP. "
+        if ldap_host_by_ip:
+            _err += f"ip {h.ip} already in LDAP"
+
+        if _err:
+            _tmp[h.name].update({'description': _err})
+        else:
+            _tmp[h.name].update({'description':'New record can be created in LDAP'})
+
+        return False, _tmp
+
+    def _compare_records(self, dbh, ldaph_info):
+        ''' compare ldap host to db host '''
+        same_mac = (dbh.mac == ldaph_info[0])
+        same_group = (dbh.group.name == ldaph_info[1])
+        if dbh.ip:
+            same_ip = (dbh.ip.address.compressed == ldaph_info[2])
+        else:
+            same_ip = (dbh.ip == ldaph_info[2])
+        return self._report_content_diff(self, *[dbh, ldaph_info,
+                                                 same_mac, same_group, same_ip])
+
+    def _report_content_diff(self, *args):
+        ''' update self.result with the content diff
+        args are dbh, ldaph_info, same_mac, same_group, same_ip'''
+        dbh = args[1]
+        ldaph_info = args[2]
+        same_mac = args[3]
+        same_group = args[4]
+        same_ip = args[5]
+
+        if same_mac and same_group and same_ip:
+            return True, None
+
+        _diff = {dbh.name:{'different':{}, 'equal': {}}}
+
+        if not same_mac:
+            _diff[dbh.name]['different'].update({'mac': {'db':dbh.mac, 'ldap':ldaph_info[0]}})
+        else:
+            _diff[dbh.name]['equal'].update({'mac': dbh.mac})
+
+        if not same_group:
+            _diff[dbh.name]['different'].update({'group': {'db':dbh.group.name, 'ldap':ldaph_info[1]}})
+        else:
+            _diff[dbh.name]['equal'].update({'group': dbh.group.name})
+
+        if not same_ip:
+            _diff[dbh.name]['different'].update({'ip': {'db':dbh.ip.address.compressed, 'ldap':ldaph_info[2]}})
+        else:
+            _diff[dbh.name]['equal'].update({'ip': dbh.ip.address.compressed if dbh.ip else None})
+
+        return False, _diff
+
+
+
 class Duplicate(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    desc = db.Column(db.Text, default='')
-    valid = db.Column(db.Boolean, default=True)
-    duptype = db.Column(db.String(10), default='')
+    desc = db.Column(db.Text, default='') # basically additional info
+    duptype = db.Column(db.String(10), default='') # one of the strings mac / ip / hostname
+    dupvalue = db.Column(db.String(50), default='', unique=True) # ip addr, mac addr, host name
 
-    def __init__(self, description, duptype=None):
+    def __init__(self, desc=None, duptype=None, dupvalue=None):
         '''
         duptype can be one of the strings mac, hostname or ip
         '''
-        self.desc = description
+        self.desc = desc
         if duptype and duptype not in ['mac', 'hostname', 'ip']:
             raise DhcpawnError("Failed creating a duplication record. type should be one of mac,hostname,ip")
         self.duptype = duptype
+        self.dupvalue = dupvalue
         self._update()
 
     def config(self):
         return dict(id=self.id,
                     description=self.desc,
-                    valid=self.valid,
-                    duplication_type=self.duptype)
-
-    def invalidate(self):
-        self.valid = False
-        self._update()
-
-    def make_valid(self):
-        self.valid = True
-        self._update()
+                    duplication_type=self.duptype,
+                    duplicate_value=self.dupvalue)
 
     def _update(self):
-        db.session.add(self)
-        db.session.commit()
+        try:
+            db.session.add(self)
+            db.session.commit()
+        except IntegrityError as e:
+            _logger.error(f"Failed creating new duplicate entry in db - rolling back. {e.__str__()}")
+            db.session.rollback()
 
 # Deploy help functions
 def deploy_groups(skeleton):
@@ -2058,3 +2449,23 @@ def deploy_hosts():
 
     for gr in Group.query.all():
         gr.deploy()
+
+# User Model
+
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(255), unique=True)
+    email = db.Column(db.String(80))
+    roles = db.Column(db.String(80))
+
+    def config(self):
+        return {id:self.id,
+                'name':self.name,
+                'email':self.email,
+                'roles':self.roles
+                }
+
+    def is_admin(self):
+        if 'admin' in self.roles:
+            return True
+        return False
