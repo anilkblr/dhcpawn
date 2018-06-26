@@ -20,8 +20,8 @@ from .help_functions import _get_or_none, get_by_field, parse_ldap_entry, extrac
 from .help_functions import *
 
 _logger = logbook.Logger(__name__)
-_config = get_project().config
-
+# _config = get_project().config
+_LDAP_DN = get_project().config['ldap_config'].get('_LDAP_DN')
 
 def gen_modlist(obj_dict, options):
     """ create a modlist in order to change entry in LDAP"""
@@ -43,6 +43,8 @@ def gen_modlist(obj_dict, options):
 
 class LDAPModel(db.Model):
     __abstract__ = True
+
+
 
     def __eq__(self, name):
         if isinstance(name, str):
@@ -205,7 +207,7 @@ class LDAPModel(db.Model):
     def _get_groups():
         ''' return ldap groups as ldap records '''
         config = get_project().config
-        return current_app.ldap_obj.search_s(config.get('PRODUCTION_LDAP_DN'),
+        return current_app.ldap_obj.search_s(_LDAP_DN,
                                              ldap.SCOPE_SUBTREE,
                                              "(&(objectClass=dhcpGroup)(objectClass=top))")
 
@@ -216,8 +218,7 @@ class LDAPModel(db.Model):
 
         for ldapg in LDAPModel._get_groups():
             _ldap_hosts += current_app.ldap_obj.search_s(f"cn={ldapg[1].get('cn')[0].decode('utf-8')}, \
-            {_config.get('PRODUCTION_LDAP_DN')}", ldap.SCOPE_SUBTREE,
-            "(&(objectClass=dhcpHost)(objectClass=top))")
+            {_LDAP_DN}", ldap.SCOPE_SUBTREE, "(&(objectClass=dhcpHost)(objectClass=top))")
 
         return _ldap_hosts
 
@@ -234,14 +235,14 @@ class LDAPModel(db.Model):
     @staticmethod
     def get_record_by_hostname(hostname):
         ''' search LDAP by hostname'''
-        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+        return current_app.ldap_obj.search_s(_LDAP_DN,
                                              ldap.SCOPE_SUBTREE,
                                              f"(&(objectClass=dhcpHost)(cn={hostname}))")
 
     @staticmethod
     def get_record_by_mac(mac):
         ''' search LDAP by mac address'''
-        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+        return current_app.ldap_obj.search_s(_LDAP_DN,
                                              ldap.SCOPE_SUBTREE,
                                              f"(&(objectClass=dhcpHost)(dhcpHWAddress=ethernet {mac}))")
 
@@ -249,7 +250,7 @@ class LDAPModel(db.Model):
     @staticmethod
     def get_record_by_ip(ip):
         '''search LDAP by ip address '''
-        return current_app.ldap_obj.search_s(_config.get('PRODUCTION_LDAP_DN'),
+        return current_app.ldap_obj.search_s(_LDAP_DN,
                                              ldap.SCOPE_SUBTREE,
                                              f"(&(objectClass=dhcpHost)(dhcpStatements=fixed-address {ip}))")
 
@@ -2174,6 +2175,7 @@ class Sync (db.Model):
         '''
         dreq = kwargs.get('dreq')
         dreq.request_type = f"New Sync - {kwargs.get('sender')}"
+        _logger.debug(f"New Sync - {kwargs.get('sender')}")
         dtask = Dtask(dreq.id)
         dtask.update(desc='New-Sync run compare_ldap_to_db')
 
@@ -2183,12 +2185,14 @@ class Sync (db.Model):
         _result['content'].update(res['content'])
         _result['only_in_ldap'].update(res['only_in_ldap'])
         dtask.update(desc=f"New-Sync finished running compare_ldap_to_db with status {_clean1}")
+        _logger.debug(f"New-Sync finished running compare_ldap_to_db with status {_clean1}")
         # DB TO LDAP
         _clean2, res = self.compare_db_to_ldap()
         _result['only_in_db'].update(res['only_in_db'])
 
         st = 'clean' if _clean1 and _clean2 else 'dirty'
         dtask.update(desc=f"New-Sync finished running compare_db_to_ldap with status {_clean2}")
+        _logger.debug(f"New-Sync finished running compare_db_to_ldap with status {_clean2}")
         self.update(**{'status':st, 'endtime':'', 'result':_result})
         dtask.update(status='succeeded',
                      desc=f"New Sync status {st}",

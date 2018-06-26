@@ -1,0 +1,15 @@
+name: dhcpawn
+
+deps:
+  - psycopg2-binary
+  - pyldap
+  - sqlalchemy-utils
+  - ipdb
+  - pudb
+  - ipaddress
+  - celery
+  - raven[flask]
+
+flask_config:
+  JSON_SORT_KEYS: False
+  SQLALCHEMY_TRACK_MODIFICATIONS: False
