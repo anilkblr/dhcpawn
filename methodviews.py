@@ -1375,10 +1375,3 @@ class NewSync(NewSyncBaseAPI):
 
         self.result = req.config()
         self.msg = 'get info about dhcpawn new sync number %s' % param
-
-
-### Sentry
-# @gossip.register('cob.after_configure_app')
-# def after_configure_app(app):
-#     app.config['SENTRY_DSN'] = 'http://1798f04a5bc749e7a99ba63eb8346e60:4560f83a51764b7b8f4fc400aa4b0b8e@sentry.infinidat.com/51'
-#     Sentry(app)

@@ -19,36 +19,30 @@ from raven import Client
 from raven.contrib.celery import register_signal, register_logger_signal
 import logging
 
-dhcpawn_project = get_project()
-
+config = get_project().config
+_logger = logbook.Logger(__name__)
 # enable Sentry in celery workers
 # taken from https://docs.sentry.io/clients/python/integrations/celery/
-client = Client(dhcpawn_project.config['sentry_config'].get('SENTRY_DSN'))
-register_logger_signal(client)
-register_logger_signal(client, loglevel=logging.INFO)
-register_signal(client)
-register_signal(client, ignore_expected=True)
+if not config.get('DEBUG'):
+    _logger.info("Activating Sentry")
+    client = Client(config.get('SENTRY_DSN'))
+    register_logger_signal(client)
+    register_logger_signal(client, loglevel=logging.INFO)
+    register_signal(client)
+    register_signal(client, ignore_expected=True)
 
 
 __all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
 
-if get_project().config.get('sync_config'):
-    sync_config = dhcpawn_project.config['sync_config']
-    sync_every = sync_config['sync_every']
-    ldap_sanity_every = sync_config['ldap_sanity_every']
-    sync_max_records_to_keep = sync_config['max_records_to_keep']
-    sync_delete_ldap_entries = sync_config.get('sync_delete_ldap_entries', \
-                                               os.getenv('_DHCPAWN_SYNC_DELETE_LDAP_ENTRIES', False))
-    sync_copy_ldap_entries_to_db = sync_config.get('sync_copy_ldap_entries_to_db', \
-                                                   os.getenv('_DHCPAWN_SYNC_COPY_LDAP_ENTRIES_TO_DB', True))
-else:
-    sync_every = 600
-    ldap_sanity_every = 300
-    sync_delete_ldap_entries = False
-    sync_copy_ldap_entries_to_db = True
-    sync_max_records_to_keep = 20
+sync_config = config.get('sync_config')
+sync_every = sync_config.get('every')
+sync_max_records_to_keep = sync_config['max_records_to_keep']
+sync_delete_ldap_entries = sync_config.get('sync_delete_ldap_entries', False)
+sync_copy_ldap_entries_to_db = sync_config.get('sync_copy_ldap_entries_to_db', True)
 
-_logger = logbook.Logger(__name__)
+ldap_sanity = config.get('ldap_sanity')
+ldap_sanity_every = ldap_sanity.get('every')
+daily_sanity = config.get('daily_sanity')
 
 @task(bind=True, every=sync_every, use_app_context=True)
 def task_new_sync(self):
@@ -62,13 +56,14 @@ def task_new_sync(self):
 
 @task(bind=True, every=ldap_sanity_every, use_app_context=True)
 def task_run_ldap_sanity(self):
-
+    _logger.debug('Task: ldap sanity')
     self.drequest = Req()
     LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
     return [duplicate.config() for duplicate in Duplicate.query.all()]
 
-@task(bind=True, every=crontab(hour='10', minute='1', day_of_week='sun,mon,tue,wed,thu,fri,sat'), use_app_context=True)
+@task(bind=True, every=crontab(hour=daily_sanity['hour'], minute=daily_sanity['minute'], day_of_week=daily_sanity['day_of_week']), use_app_context=True)
 def task_daily_sanity(self):
+    _logger.debug('Task: Daily sanity')
     self.drequest = Req()
     # run sync
     s = NewSyncModel()
