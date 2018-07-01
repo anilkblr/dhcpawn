@@ -48,7 +48,7 @@ class DRequestListAPI(DhcpawnMethodView):
     @gen_resp_deco
     def get(self):
         ''' used to get all requests from db '''
-        reqs = Req.query.order_by(desc('id')).all()
+        reqs = Req.query.order_by(desc('id')).limit(100).all()
         self.result = dict(items=[req.config() for req in reqs])
         self.msg = 'get all requests info'
 
@@ -1338,7 +1338,7 @@ class NewSyncListAPI(DhcpawnMethodView):
     @gen_resp_deco
     def get(self):
         ''' used to get a list of all new sync from database '''
-        syncs = NewSyncModel.query.order_by(desc('id')).all()
+        syncs = NewSyncModel.query.order_by(desc('id')).limit(5).all()
         self.result = dict(items=[sync.config() for sync in syncs])
         self.msg = 'get all syncs'
 
@@ -1348,10 +1348,9 @@ class NewSyncListAPI(DhcpawnMethodView):
         '''
         New sync - not group based. all ldap records are taken and compared to DB.
         '''
-        s = NewSyncModel()
-        s.run_new_sync(**{'dreq': self.drequest, 'sender':'manual'})
-        NewSyncModel.purge()
-        self.result = s.config()
+        _logger.debug("Running new sync task")
+        ret = task_new_sync.s(**{'sender':'manual rest api request'}).apply_async()
+        return jsonify(f"Sync task sent: {ret}")
 
 class NewSyncBaseAPI(DhcpawnMethodView):
     def get_newsync_by_param(self, param):

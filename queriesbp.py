@@ -41,12 +41,13 @@ def sitemap():
 @api.route('/general_info/', methods=['GET'])
 def general_info():
     config = get_project().config
+    ldap_config = config['ldap_config']
     broker_connection = re.match('.* (amqp://.*//) at', celery_app.broker_connection().__str__())[1]
     info = {
         'LDAP': {
-            'LDAP_PRODUCTION_SERVER': config['PRODUCTION_LDAP'],
-            'LDAP_SERVER': config['LDAP_SERVER'],
-            'BIND_DN': config['BIND_DN']
+            'LDAP_PRODUCTION_SERVER': config['PRODUCTION'],
+            'LDAP_SERVER': ldap_config['_LDAP_URI'],
+            'BIND_DN': ldap_config['_LDAP_DN']
             },
         'DB': {
             'SQLALCHEMY_DATABASE_URI': current_app.config.get('SQLALCHEMY_DATABASE_URI'),
@@ -55,7 +56,7 @@ def general_info():
             'BROKER': broker_connection
             },
         'SERVER': {
-            'LOG LEVEL': _logger.level_name
+            'LOG LEVEL': config['LOG_LEVEL']
             }
         }
     return jsonify(info)

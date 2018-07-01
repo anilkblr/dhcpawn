@@ -13,3 +13,6 @@ deps:
 flask_config:
   JSON_SORT_KEYS: False
   SQLALCHEMY_TRACK_MODIFICATIONS: False
+
+docker:
+  image_name: "git.infinidat.com:4567/infradev/dhcpawn"

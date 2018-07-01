@@ -6,7 +6,7 @@ from ldap import LDAPError, NO_SUCH_OBJECT
 from flask import Blueprint, jsonify, request, current_app
 from cob import db
 
-from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange, Sync
+from .models import Host, Subnet, IP, Dtask, Group, Pool, CalculatedRange, DhcpRange, Sync, Req, LDAPModel, help_func_daily_sanity
 from . import methodviews as mv
 from .help_functions import get_by_field, extract_skeleton
 from .tasks import *
@@ -48,9 +48,6 @@ api.add_url_rule('/pools/<param>', view_func=mv.PoolAPI.as_view('pool_api'), met
 
 api.add_url_rule('/dhcpranges/', view_func=mv.DhcpRangeListAPI.as_view('dhcprange_list_api'), methods=['GET', 'POST'])
 api.add_url_rule('/calcranges/', view_func=mv.CalculatedLRangeListAPI.as_view('calcrange_list_api'), methods=['GET', 'POST'])
-
-api.add_url_rule('/sync/', view_func=mv.Sync.as_view('sync'), methods=['GET', 'POST'])
-api.add_url_rule('/sync/group/<group_name>', view_func=mv.Sync.as_view('sync_per_group'), methods=['GET', 'POST'])
 
 api.add_url_rule('/newsync', view_func=mv.NewSyncListAPI.as_view('newsync_list_api'), methods=['GET', 'POST'])
 api.add_url_rule('/newsync/<param>', view_func=mv.NewSync.as_view('newsync'), methods=['GET'])
@@ -119,27 +116,26 @@ def deploy_server():
 
     return jsonify("Deployement started")
 
-@api.route('/get_sync_stat/')
-def gss():
-    return jsonify(Group.get_sync_stat_for_all_groups())
 
-@api.route('/sync_all_groups/')
-def sync_all_groups():
+@api.route('/run_new_sync')
+def sync_ldap_db():
 
-    task_sync_new.s().apply_async()
-    # for gr in Group.query.all():
-    #     _logger.debug(f"Start syncing group {gr}")
-    #     try:
-    #         kwargs.update({'gr_name': gr.name})
-    #         kwargs.update({'sync_delete_ldap_entries':False})
-    #         kwargs.update({'sync_copy_ldap_entries_to_db':True})
-    #         tmpd, host_stat_dict = gr.group_sync(**kwargs)
-    #         return tmpd
+    s = Sync()
+    ret = s.run_new_sync(**{ 'sender':f'manual syncronous ldap-db sync request'})
+    return jsonify(f"Sync task sent: {ret}. sync id {s.id}")
 
-    #     except (LDAPError, DhcpawnError) as e:
-    #         _logger.error(f"failed group {gr} sync {e.__str__()}")
+@api.route('/run_ldap_sanity')
+def run_ldap_sanity():
+    ''' run ldap sanity syncronously '''
+    drequest_id = LDAPModel.run_ldap_sanity(**{'sender':'Manual syncronous ldap sanity'})
+    return f"Ldap sanity request finished. Drequest id: {drequest_id}."
 
-    return jsonify("Sent sync all groups task")
+
+@api.route('/run_daily_sanity')
+def daily_sanity():
+    ''' manual dispatch of daily sanity'''
+    task_daily_sanity.s().apply_async()
+    return jsonify("Daily sanity report is being created and a mail will be sent at the end")
 
 @api.route('/refresh_ldap_connection')
 def refresh_ldap_connection():

@@ -15,7 +15,10 @@ def after_configure_app(app):
     log_handler.format_string = '[{record.time:%Y-%m-%d %H:%M:%S.%f%z}] {record.level_name}: {record.channel}: {record.func_name}: {record.lineno}:  {record.message}'
     log_handler.push_application()
     app.ldap_obj = ldap_init()
-
     if not app.config['DEBUG'] and not app.config['TESTING']:
         app.config['SENTRY_DSN'] = get_project().config.get('SENTRY_DSN')
-        Sentry(app)
+        sentry_inst = Sentry(app)
+        if os.getenv('HOSTNAME'):
+            sentry_inst.client.name = os.getenv('HOSTNAME')
+        else:
+            sentry_inst.client.name = 'dhcpawn-unset-server'

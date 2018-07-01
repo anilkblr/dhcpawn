@@ -3,10 +3,11 @@ import json
 import logbook
 import ldap
 import os
+import sys
 # from celery.contrib import rdb
 from cob import task, db
 from cob.project import get_project
-from .models import Host, Group, Req, db, Dtask, IP, deploy_hosts, deploy_skeleton, LDAPModel, Duplicate, User
+from .models import Host, Group, Req, db, Dtask, IP, deploy_hosts, deploy_skeleton, LDAPModel, Duplicate, User, help_func_daily_sanity
 from .models import Sync as NewSyncModel
 from .help_functions import *
 from celery import chain
@@ -20,7 +21,10 @@ from raven.contrib.celery import register_signal, register_logger_signal
 import logging
 
 config = get_project().config
+
 _logger = logbook.Logger(__name__)
+# _logger = logbook.StreamHandler(sys.stdout, bubble=True).push_application()
+
 # enable Sentry in celery workers
 # taken from https://docs.sentry.io/clients/python/integrations/celery/
 if not config.get('DEBUG'):
@@ -30,9 +34,13 @@ if not config.get('DEBUG'):
     register_logger_signal(client, loglevel=logging.INFO)
     register_signal(client)
     register_signal(client, ignore_expected=True)
+    if os.getenv('HOSTNAME'):
+        client.name = os.getenv('HOSTNAME')
+    else:
+        client.name = 'dhcpawn-unset-server'
 
 
-__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy']
+__all__ = [ 'task_single_input_registration','task_single_input_deletion', 'task_update_drequest', 'task_send_postreply', 'task_deploy', 'task_new_sync', 'task_daily_sanity']
 
 sync_config = config.get('sync_config')
 sync_every = sync_config.get('every')
@@ -45,36 +53,36 @@ ldap_sanity_every = ldap_sanity.get('every')
 daily_sanity = config.get('daily_sanity')
 
 @task(bind=True, every=sync_every, use_app_context=True)
-def task_new_sync(self):
+def task_new_sync(self, **kwargs):
 
-    self.drequest = Req()
     s = NewSyncModel()
-    s.run_new_sync(**{'dreq': self.drequest, 'sender':'dhcpawn task'})
+    _logger.debug(kwargs.get('sender','dhcpawn task'))
+    drequest_id = s.run_new_sync(**{'sender': kwargs.get('sender','dhcpawn task')})
     NewSyncModel.purge(sync_max_records_to_keep)
 
-    return f"Sync request: {s.id} finished. Drequest id: {self.drequest.id}"
+    return f"Sync request: {s.id} finished. Drequest id: {drequest_id}. Celery task id: {self.request.id}"
 
 @task(bind=True, every=ldap_sanity_every, use_app_context=True)
 def task_run_ldap_sanity(self):
-    _logger.debug('Task: ldap sanity')
-    self.drequest = Req()
-    LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
-    return [duplicate.config() for duplicate in Duplicate.query.all()]
-
+    drequest_id, _ = LDAPModel.run_ldap_sanity(**{'sender':'Celery periodic task'})
+    return f"Ldap sanity request finished. Drequest id: {drequest_id}. Celery task id: {self.request.id}"
 @task(bind=True, every=crontab(hour=daily_sanity['hour'], minute=daily_sanity['minute'], day_of_week=daily_sanity['day_of_week']), use_app_context=True)
 def task_daily_sanity(self):
-    _logger.debug('Task: Daily sanity')
-    self.drequest = Req()
-    # run sync
-    s = NewSyncModel()
-    s.run_new_sync(**{'dreq': self.drequest, 'sender':'dhcpawn task'})
-    last_sync = NewSyncModel.query.order_by(desc('id')).all()[0]
-    # run ldap sanity
-    ldap_issues = LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
-    # send email with results
-    email_daily_sanity(**{'emails':[user.email for user in User.query.all()],
-                          'ldap_issues':ldap_issues,
-                          'last_sync':last_sync})
+
+    res = help_func_daily_sanity()
+    return res
+    # _logger.debug('Task: Daily sanity')
+    # self.drequest = Req()
+    # # run sync
+    # s = NewSyncModel()
+    # s.run_new_sync(**{'dreq': self.drequest, 'sender':'dhcpawn task'})
+    # last_sync = NewSyncModel.query.order_by(desc('id')).all()[0]
+    # # run ldap sanity
+    # _, ldap_issues = LDAPModel.run_ldap_sanity(**{'dreq':self.drequest, 'sender':'manual rest for testing'})
+    # # send email with results
+    # email_daily_sanity(**{'emails':[user.email for user in User.query.all()],
+    #                       'ldap_issues':ldap_issues,
+    #                       'last_sync':last_sync})
 
 @task(bind=True, use_app_context=True)
 def task_update_drequest(self, *args, **kwargs):

@@ -29,4 +29,4 @@ def ldap_init():
 
 def server_dn():
 
-    return ldap_config.get('LDAP_DN')
+    return ldap_config.get('_LDAP_DN')

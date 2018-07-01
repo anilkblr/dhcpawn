@@ -236,7 +236,8 @@ def extract_skeleton():
                 'pools':{},
                 'calcranges':{},
                 }
-    basedn = os.getenv('_DHCPAWN_PRODUCTION_LDAP_DN')
+    basedn = config['ldap_config'].get('_LDAP_DN')
+    _logger.debug(f"BASE_DN={basedn}")
     rawdata = current_app.ldap_obj.search_s(basedn, SCOPE_SUBTREE, '(objectClass=*)')
 
     s = dict()
@@ -336,12 +337,11 @@ def _parse_sync_to_email(*, sync_inst):
     if content:
         body += f"<b style=\"font-size:25px;color:green\">Content (different):</b><br>"
         for h in content:
-            _logger.info(h)
-            body += f"<li><b>{h}:</b></li>"
+            body += f"<li><b>db record - {str(content[h]['db'])}:</b></li>"
             body += "<ul>"
-            for diff in content[h]['different']:
+            for item in content[h]['ldap']:
                 body += "<ul>"
-                body += f"<li>{str(content[h]['different'][diff])}</li>"
+                body += f"<li>ldap record: {str(item)}</li>"
                 body += "</ul>"
             body += "</ul>"
             body += "</ul>"
